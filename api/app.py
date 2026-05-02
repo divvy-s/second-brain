@@ -109,11 +109,22 @@ def create_app() -> FastAPI:
     @app.post("/brain-dump")
     def brain_dump(request: BrainDumpRequest) -> dict[str, Any]:
         svc = services()
+        # 1. Capture and store the event
         event = svc.capture.capture(request.text, title=request.title)
         svc.database.add_event(event)
         svc.vector_store.index_event(event)
         svc.event_bus.publish(event)
-        return {"event": event.to_dict()}
+
+        # 2. Immediately run the agents on just this event to generate approvals
+        workflow = build_workflow(svc)
+        state = workflow.run([event])
+
+        # 3. Return the event + any pending approvals that were just created
+        pending = [
+            r.__dict__ for r in svc.approval_gate.store.list("pending")
+            if str(r.action.get("source_event_id")) == event.id
+        ]
+        return {"event": event.to_dict(), "approvals": pending}
 
     @app.post("/orchestrate")
     def orchestrate(request: OrchestrateRequest | None = None) -> dict[str, Any]:

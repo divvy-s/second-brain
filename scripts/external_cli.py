@@ -237,17 +237,22 @@ def telegram_fetch(config: dict[str, Any]) -> dict[str, Any]:
 
 def telegram_action(config: dict[str, Any], action: dict[str, Any]) -> dict[str, Any]:
     token = resolve_secret(config, "bot_token")
+    chat_id = action.get("chat_id") or resolve_secret(config, "chat_id")
+    
     if not token:
         raise RuntimeError("Telegram bot token is required for write actions")
+    if not chat_id:
+        raise ValueError("Telegram chat_id is required (action.chat_id or config.chat_id)")
     if action.get("type") != "send_message":
         raise ValueError(f"Unsupported Telegram action type: {action.get('type')}")
+        
     data = http_json(
         "POST",
         f"https://api.telegram.org/bot{token}/sendMessage",
-        payload={"chat_id": action["chat_id"], "text": action["text"]},
+        payload={"chat_id": chat_id, "text": action["text"]},
     )
     if not data.get("ok"):
-        raise RuntimeError("Telegram API error")
+        raise RuntimeError(f"Telegram API error: {data.get('description', 'Unknown error')}")
     return {"ok": True, "result": {"message_id": data.get("result", {}).get("message_id"), "status": "sent"}}
 
 

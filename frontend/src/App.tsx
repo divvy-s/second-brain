@@ -26,9 +26,10 @@ export function App() {
   const [query, setQuery] = useState("");
   const [lastRun, setLastRun] = useState<Record<string, unknown> | null>(null);
   const [loadState, setLoadState] = useState<LoadState>("idle");
+  const [capturing, setCapturing] = useState(false);
   const [error, setError] = useState("");
 
-  const enabledCount = useMemo(() => plugins.filter((plugin) => plugin.enabled).length, [plugins]);
+  const enabledCount = useMemo(() => plugins.filter((p) => p.enabled).length, [plugins]);
 
   async function refresh() {
     setLoadState("loading");
@@ -37,7 +38,7 @@ export function App() {
       const [pluginResult, healthResult, approvalResult] = await Promise.all([
         api.plugins(),
         api.health(),
-        api.approvals()
+        api.approvals(),
       ]);
       setPlugins(pluginResult.plugins);
       setHealth(healthResult);
@@ -47,6 +48,11 @@ export function App() {
       setError(err instanceof Error ? err.message : "Request failed");
       setLoadState("error");
     }
+  }
+
+  async function refreshApprovals() {
+    const result = await api.approvals();
+    setApprovals(result.approvals);
   }
 
   useEffect(() => {
@@ -64,9 +70,19 @@ export function App() {
 
   async function capture() {
     if (!captureText.trim()) return;
-    const result = await api.brainDump(captureText);
-    setCaptureText("");
-    setHits([{ event: result.event, score: result.event.importance }, ...hits]);
+    setCapturing(true);
+    try {
+      const result = await api.brainDump(captureText);
+      setCaptureText("");
+      // Add to retrieval list immediately
+      setHits((prev) => [{ event: result.event, score: result.event.importance }, ...prev]);
+      // Auto-refresh approvals — brain dump now auto-generates them on the backend
+      await refreshApprovals();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Capture failed");
+    } finally {
+      setCapturing(false);
+    }
   }
 
   async function retrieve() {
@@ -89,7 +105,15 @@ export function App() {
     } else {
       await api.reject(request.id);
     }
-    await refresh();
+    await refreshApprovals();
+  }
+
+  function getApprovalSummary(request: ApprovalRequest): string {
+    const action = request.action;
+    const type = String(action.type ?? "action");
+    const plugin = String(action.plugin ?? "");
+    const title = String(action.title ?? action.text ?? action.subject ?? "");
+    return [type, plugin && `→ ${plugin}`, title && `"${title}"`].filter(Boolean).join(" ");
   }
 
   return (
@@ -128,6 +152,7 @@ export function App() {
       </section>
 
       <section className="workspace-grid">
+        {/* Plugins Panel */}
         <div className="panel">
           <div className="panel-title">
             <Plug size={18} />
@@ -140,7 +165,11 @@ export function App() {
                   <strong>{plugin.name}</strong>
                   <span>{plugin.auth_type} · {plugin.location} · v{plugin.version}</span>
                 </div>
-                <button className="icon-button" onClick={() => togglePlugin(plugin)} title={plugin.enabled ? "Disable" : "Enable"}>
+                <button
+                  className="icon-button"
+                  onClick={() => togglePlugin(plugin)}
+                  title={plugin.enabled ? "Disable" : "Enable"}
+                >
                   {plugin.enabled ? <Check size={18} /> : <CircleOff size={18} />}
                 </button>
               </div>
@@ -148,6 +177,7 @@ export function App() {
           </div>
         </div>
 
+        {/* Capture Panel */}
         <div className="panel">
           <div className="panel-title">
             <Send size={18} />
@@ -155,22 +185,36 @@ export function App() {
           </div>
           <textarea
             value={captureText}
-            onChange={(event) => setCaptureText(event.target.value)}
-            placeholder="Brain dump, message, meeting note, or task..."
+            onChange={(e) => setCaptureText(e.target.value)}
+            onKeyDown={(e) => { if (e.key === "Enter" && e.ctrlKey) capture(); }}
+            placeholder="Type a task, message, reminder, or note... (Ctrl+Enter to send)"
           />
-          <button className="primary" onClick={capture}>
-            <Send size={17} />
-            Capture
+          <button
+            className="primary"
+            onClick={capture}
+            disabled={capturing || !captureText.trim()}
+          >
+            {capturing ? <Loader2 className="spin" size={17} /> : <Send size={17} />}
+            {capturing ? "Generating actions…" : "Capture + Generate Actions"}
           </button>
+          <p className="muted" style={{ marginTop: "0.5rem", fontSize: "0.78rem" }}>
+            Actions appear in Approvals immediately. Click ✓ to execute.
+          </p>
         </div>
 
+        {/* Retrieval Panel */}
         <div className="panel">
           <div className="panel-title">
             <Search size={18} />
             <h2>Retrieval</h2>
           </div>
           <div className="input-row">
-            <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search context" />
+            <input
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              onKeyDown={(e) => { if (e.key === "Enter") retrieve(); }}
+              placeholder="Search your memory…"
+            />
             <button className="icon-button" onClick={retrieve} title="Search">
               <Search size={18} />
             </button>
@@ -180,30 +224,46 @@ export function App() {
               <article className="event-item" key={hit.event.id}>
                 <strong>{hit.event.title}</strong>
                 <p>{hit.event.body}</p>
-                <span>{hit.event.source} · {hit.score.toFixed(2)}</span>
+                <span>{hit.event.source} · score {hit.score.toFixed(2)}</span>
               </article>
             ))}
           </div>
         </div>
 
+        {/* Approvals Panel */}
         <div className="panel">
           <div className="panel-title">
             <Bell size={18} />
-            <h2>Approvals</h2>
+            <h2>
+              Approvals
+              {approvals.length > 0 && (
+                <span className="badge" style={{ marginLeft: "0.5rem" }}>{approvals.length}</span>
+              )}
+            </h2>
           </div>
           <div className="approval-list">
-            {approvals.length === 0 && <p className="muted">No pending approvals.</p>}
+            {approvals.length === 0 && (
+              <p className="muted">Capture something above — actions will appear here instantly.</p>
+            )}
             {approvals.map((request) => (
               <article className="approval-item" key={request.id}>
                 <div>
-                  <strong>{String(request.action.type ?? "action")}</strong>
+                  <strong>{getApprovalSummary(request)}</strong>
                   <span>{request.risk} risk · {request.id.slice(0, 8)}</span>
                 </div>
                 <div className="decision-buttons">
-                  <button className="icon-button" onClick={() => decide(request, true)} title="Approve">
+                  <button
+                    className="icon-button"
+                    onClick={() => decide(request, true)}
+                    title="Approve & Execute"
+                  >
                     <Check size={17} />
                   </button>
-                  <button className="icon-button danger" onClick={() => decide(request, false)} title="Reject">
+                  <button
+                    className="icon-button danger"
+                    onClick={() => decide(request, false)}
+                    title="Reject"
+                  >
                     <X size={17} />
                   </button>
                 </div>
@@ -216,11 +276,10 @@ export function App() {
       <section className="run-band">
         <button className="primary" onClick={runBrain}>
           <Brain size={18} />
-          Run Orchestration
+          Sync Plugins &amp; Run Orchestration
         </button>
         {lastRun && <pre>{JSON.stringify(lastRun.results ?? lastRun, null, 2)}</pre>}
       </section>
     </main>
   );
 }
-

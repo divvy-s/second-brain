@@ -73,7 +73,17 @@ class BrainWorkflow:
         return state
 
     def ingest(self, state: BrainState) -> BrainState:
-        events = state.get("events") or self.runner.fetch_all_events()
+        # If events are provided, use them. Otherwise fetch from plugins.
+        events = state.get("events")
+        if events is None:
+            # When auto-fetching, we filter out mock events to reduce noise
+            raw_events = self.runner.fetch_all_events()
+            events = [e for e in raw_events if e.metadata.get("mode") != "mock"]
+            
+            # Also fetch recent manual brain dumps so they get processed
+            db_events = self.database.recent_events(limit=20)
+            events.extend([e for e in db_events if e.kind == "brain_dump"])
+            
         enriched: list[ContextEvent] = []
         for event in events:
             if not event.entities:
@@ -92,7 +102,8 @@ class BrainWorkflow:
     def plan(self, state: BrainState) -> BrainState:
         plans: list[dict[str, Any]] = []
         for event, score in state.get("prioritized", []):
-            if score < 0.45:
+            # Higher threshold for autonomous planning
+            if score < 0.6:
                 continue
             steps = self.decomposer.decompose(
                 f"Decide what to do about this event: {event.title}\n{event.body}",
@@ -102,18 +113,35 @@ class BrainWorkflow:
         return {**state, "plans": plans}
 
     def route(self, state: BrainState) -> BrainState:
+        # Get existing requests to avoid processing the same event twice
+        existing_requests = self.executor.approval_gate.store.list()
+        handled_event_ids = {
+            str(req.action.get("source_event_id")) 
+            for req in existing_requests 
+            if req.action.get("source_event_id")
+        }
+
         actions: list[dict[str, Any]] = []
         for event, _ in state.get("prioritized", []):
+            # Skip if this event has EVER generated an action
+            if event.id in handled_event_ids:
+                continue
+                
             for agent in self.agents:
                 if agent.can_handle(event):
                     decision = agent.handle(event)
                     actions.extend(decision.actions)
+                    
         for plan in state.get("plans", []):
+            if plan["event_id"] in handled_event_ids:
+                continue
+                
             for step in plan.get("steps", []):
                 action = dict(step["action"])
                 action.setdefault("risk", step.get("risk", "medium"))
                 action.setdefault("source_event_id", plan["event_id"])
                 actions.append(action)
+                
         deduped: list[dict[str, Any]] = []
         seen: set[tuple[str, str, str]] = set()
         for action in actions:
@@ -124,6 +152,22 @@ class BrainWorkflow:
         return {**state, "actions": deduped}
 
     def approval_execute(self, state: BrainState) -> BrainState:
-        results = [self.executor.execute(action) for action in state.get("actions", [])]
+        """Submit each action to the approval gate. Actual execution happens when the user approves via the UI."""
+        store = self.executor.approval_gate.store
+        # Build set of (type, plugin, source_event_id) already in the store to avoid duplicates
+        existing_keys: set[tuple[str, str, str]] = {
+            (str(req.action.get("type")), str(req.action.get("plugin")), str(req.action.get("source_event_id")))
+            for req in store.list()
+            if req.status == "pending"
+        }
+        results: list[dict[str, Any]] = []
+        for action in state.get("actions", []):
+            key = (str(action.get("type")), str(action.get("plugin")), str(action.get("source_event_id")))
+            if key in existing_keys:
+                results.append({"status": "already_pending", "key": str(key)})
+                continue
+            # evaluate() creates the pending ApprovalRequest without executing
+            result = self.executor.approval_gate.evaluate(action)
+            results.append(result)
         return {**state, "results": results}
 

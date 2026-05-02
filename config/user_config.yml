@@ -57,6 +57,7 @@ plugins:
   telegram:
     enabled: true
     bot_token_env: "TELEGRAM_BOT_TOKEN"
+    chat_id_env: "TELEGRAM_CHAT_ID"
     mock_events:
       - id: "telegram-demo-1"
         kind: "message"
