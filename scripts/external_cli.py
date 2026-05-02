@@ -10,7 +10,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 
@@ -275,6 +275,107 @@ def whatsapp_action(config: dict[str, Any], action: dict[str, Any]) -> dict[str,
     )
     return {"ok": True, "result": data}
 
+def calendar_fetch(config: dict[str, Any]) -> dict[str, Any]:
+    token = resolve_secret(config, "access_token")
+    if not token:
+        return {"ok": True, "events": normalize_mock_events("calendar", config)}
+    
+    now = datetime.now(timezone.utc).isoformat()
+    url = f"https://www.googleapis.com/calendar/v3/calendars/primary/events?timeMin={urllib.parse.quote(now)}&maxResults=10&singleEvents=true&orderBy=startTime"
+    headers = {"Authorization": f"Bearer {token}"}
+    data = http_json("GET", url, headers=headers)
+    
+    events: list[dict[str, Any]] = []
+    for item in data.get("items", []):
+        events.append({
+            "id": f"calendar-{item.get('id')}",
+            "source": "mcp_calendar",
+            "kind": "event",
+            "title": item.get("summary", "(no title)"),
+            "body": item.get("description", ""),
+            "occurred_at": item.get("start", {}).get("dateTime", item.get("start", {}).get("date", utc_now_iso())),
+            "participants": [p.get("email", "") for p in item.get("attendees", [])],
+            "importance": 0.8,
+            "metadata": {"event_id": item.get("id"), "link": item.get("htmlLink")}
+        })
+    return {"ok": True, "events": events}
+
+
+def calendar_action(config: dict[str, Any], action: dict[str, Any]) -> dict[str, Any]:
+    token = resolve_secret(config, "access_token")
+    if not token:
+        raise RuntimeError("Calendar access token is required for write actions")
+    
+    action_type = action.get("type")
+    if action_type not in ("create_calendar_draft", "create_event"):
+        raise ValueError(f"Unsupported Calendar action type: {action_type}")
+        
+    url = "https://www.googleapis.com/calendar/v3/calendars/primary/events"
+    headers = {"Authorization": f"Bearer {token}"}
+    
+    start_time = action.get("start_time")
+    end_time = action.get("end_time")
+    if not start_time:
+        start_time = (datetime.now(timezone.utc) + timedelta(days=1)).isoformat()
+        end_time = (datetime.now(timezone.utc) + timedelta(days=1, hours=1)).isoformat()
+        
+    payload = {
+        "summary": action.get("title", "New Event"),
+        "description": action.get("description", ""),
+        "start": {"dateTime": start_time},
+        "end": {"dateTime": end_time}
+    }
+    
+    data = http_json("POST", url, headers=headers, payload=payload)
+    return {"ok": True, "result": {"event_id": data.get("id"), "link": data.get("htmlLink"), "status": "created"}}
+
+
+def todoist_fetch(config: dict[str, Any]) -> dict[str, Any]:
+    token = resolve_secret(config, "api_key")
+    if not token:
+        return {"ok": True, "events": normalize_mock_events("todoist", config)}
+        
+    url = "https://api.todoist.com/rest/v2/tasks"
+    headers = {"Authorization": f"Bearer {token}"}
+    data = http_json("GET", url, headers=headers)
+    
+    events: list[dict[str, Any]] = []
+    items = data if isinstance(data, list) else data.get("items", [])
+        
+    for item in items:
+        events.append({
+            "id": f"todoist-{item.get('id')}",
+            "source": "mcp_todoist",
+            "kind": "task",
+            "title": item.get("content", "(no title)"),
+            "body": item.get("description", ""),
+            "occurred_at": item.get("created_at", utc_now_iso()),
+            "participants": [],
+            "importance": 0.6,
+            "metadata": {"task_id": item.get("id"), "url": item.get("url")}
+        })
+    return {"ok": True, "events": events}
+
+
+def todoist_action(config: dict[str, Any], action: dict[str, Any]) -> dict[str, Any]:
+    token = resolve_secret(config, "api_key")
+    if not token:
+        raise RuntimeError("Todoist API key is required for write actions")
+        
+    action_type = action.get("type")
+    if action_type != "create_task":
+        raise ValueError(f"Unsupported Todoist action type: {action_type}")
+        
+    url = "https://api.todoist.com/rest/v2/tasks"
+    headers = {"Authorization": f"Bearer {token}"}
+    payload = {
+        "content": action.get("title", "New Task"),
+        "description": action.get("description", "")
+    }
+    
+    data = http_json("POST", url, headers=headers, payload=payload)
+    return {"ok": True, "result": {"task_id": data.get("id"), "url": data.get("url"), "status": "created"}}
+
 
 def health(service: str, config: dict[str, Any]) -> dict[str, Any]:
     if normalize_mock_events(service, config):
@@ -290,6 +391,12 @@ def health(service: str, config: dict[str, Any]) -> dict[str, Any]:
         return {"ok": True, "healthy": bool(token)}
     if service == "whatsapp":
         return {"ok": True, "healthy": bool(config.get("base_url"))}
+    if service == "calendar":
+        token = resolve_secret(config, "access_token")
+        return {"ok": True, "healthy": bool(token)}
+    if service == "todoist":
+        token = resolve_secret(config, "api_key")
+        return {"ok": True, "healthy": bool(token)}
     return {"ok": False, "healthy": False, "error": "unknown service"}
 
 
@@ -298,6 +405,8 @@ FETCHERS = {
     "slack": slack_fetch,
     "telegram": telegram_fetch,
     "whatsapp": whatsapp_fetch,
+    "calendar": calendar_fetch,
+    "todoist": todoist_fetch,
 }
 
 ACTIONS = {
@@ -305,6 +414,8 @@ ACTIONS = {
     "slack": slack_action,
     "telegram": telegram_action,
     "whatsapp": whatsapp_action,
+    "calendar": calendar_action,
+    "todoist": todoist_action,
 }
 
 

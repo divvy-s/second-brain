@@ -31,7 +31,22 @@
       "version": "1.0.0",
       "auth_type": "api_key",
       "location": "built_in"
+    },
+    {
+      "name": "calendar",
+      "module": "connectors.mcp.calendar_plugin",
+      "class": "CalendarPlugin",
+      "version": "1.0.0",
+      "auth_type": "oauth",
+      "location": "built_in"
+    },
+    {
+      "name": "todoist",
+      "module": "connectors.mcp.todoist_plugin",
+      "class": "TodoistPlugin",
+      "version": "1.0.0",
+      "auth_type": "api_key",
+      "location": "built_in"
     }
   ]
 }
-

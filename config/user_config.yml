@@ -62,4 +62,23 @@ plugins:
         body: "Approval channel is ready to receive action confirmations."
         participants: ["second-brain-bot"]
         importance: 0.5
-
+  calendar:
+    enabled: true
+    access_token_env: "CALENDAR_ACCESS_TOKEN"
+    mock_events:
+      - id: "calendar-demo-1"
+        kind: "event"
+        title: "Weekly Sync"
+        body: "Discuss project updates and blockers."
+        participants: ["team@example.com"]
+        importance: 0.8
+  todoist:
+    enabled: true
+    api_key_env: "TODOIST_API_KEY"
+    mock_events:
+      - id: "todoist-demo-1"
+        kind: "task"
+        title: "Review PR"
+        body: "Review the new auth implementation."
+        participants: []
+        importance: 0.6
