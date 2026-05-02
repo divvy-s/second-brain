@@ -12,7 +12,7 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from intelligence.llm_adapter import LLMAdapter, LLMRequest, LLMUnavailable
@@ -32,24 +32,29 @@ SYSTEM_PROMPT = """\
 You are an intent classifier for a personal AI assistant called "Second Brain".
 The user types a quick brain dump. Your job is to classify what they want to do.
 
-Return ONLY valid JSON with these fields:
+Return ONLY valid JSON with this format:
 {
-  "intent": "send_message" | "create_task" | "create_calendar_event" | "send_email" | "note",
-  "plugin": "telegram" | "whatsapp" | "todoist" | "calendar" | "gmail" | "",
-  "confidence": 0.0 to 1.0,
-  "fields": {
-    "recipient": "name of the person if messaging someone",
-    "text": "the message body to send",
-    "title": "task or event title",
-    "description": "longer description if any",
-    "start_time": "ISO8601 formatted start time if mentioned (e.g., 2026-05-02T15:00:00Z)",
-    "end_time": "ISO8601 formatted end time if mentioned",
-    "subject": "email subject if email"
-  },
-  "reasoning": "one sentence explaining your classification"
+  "intents": [
+    {
+      "intent": "send_message" | "create_task" | "create_calendar_event" | "send_email" | "note",
+      "plugin": "telegram" | "whatsapp" | "todoist" | "calendar" | "gmail" | "",
+      "confidence": 0.0 to 1.0,
+      "fields": {
+        "recipient": "email address (if sending email) or name (if messaging)",
+        "text": "the message body to send",
+        "title": "task or event title",
+        "description": "longer description if any",
+        "start_time": "ISO8601 formatted start time if mentioned (e.g., 2026-05-02T15:00:00+05:30)",
+        "end_time": "ISO8601 formatted end time if mentioned",
+        "subject": "email subject if email"
+      },
+      "reasoning": "one sentence explaining your classification"
+    }
+  ]
 }
 
 Rules:
+- Identify if the user is asking for MULTIPLE things (e.g. "buy milk AND schedule a meeting"). Output an object in the "intents" array for EACH separate action.
 - If the user says "message X", "tell X", "text X", "send X", "inform X", "let X know", "ping X", "notify X" → intent is "send_message"
 - For send_message: default plugin is "telegram" unless the user says "whatsapp" or "wa" or "email"
 - If the user says "task", "todo", "buy", "need to", "remind me", "add", "fix", "complete", "finish", "review" → intent is "create_task", plugin is "todoist"
@@ -68,7 +73,7 @@ class IntentClassifier:
     def __init__(self, llm: LLMAdapter) -> None:
         self.llm = llm
 
-    def classify(self, text: str) -> ClassifiedIntent:
+    def classify(self, text: str) -> list[ClassifiedIntent]:
         """Classify the user's text into a structured intent."""
         # Try LLM first
         if self.llm.is_configured():
@@ -78,14 +83,15 @@ class IntentClassifier:
                 pass
 
         # Fall back to rules
-        return self._rule_classify(text)
+        return [self._rule_classify(text)]
 
-    def _llm_classify(self, text: str) -> ClassifiedIntent:
+    def _llm_classify(self, text: str) -> list[ClassifiedIntent]:
         """Use the LLM to classify intent."""
+        ist_tz = timezone(timedelta(hours=5, minutes=30))
         messages = [
             {
                 "role": "system",
-                "content": SYSTEM_PROMPT + f"\n\nCURRENT DATE/TIME: {datetime.now(timezone.utc).isoformat()}"
+                "content": SYSTEM_PROMPT + f"\n\nCURRENT LOCAL TIME (IST): {datetime.now(ist_tz).isoformat()}"
             },
             {"role": "user", "content": text},
         ]
@@ -99,13 +105,21 @@ class IntentClassifier:
         match = re.search(r"\{.*\}", raw, re.S)
         data = json.loads(match.group(0) if match else raw)
 
-        return ClassifiedIntent(
-            intent=data.get("intent", "note"),
-            plugin=data.get("plugin", ""),
-            confidence=float(data.get("confidence", 0.5)),
-            fields=data.get("fields", {}),
-            reasoning=data.get("reasoning", "LLM classification"),
-        )
+        intents_data = data.get("intents", [])
+        if not intents_data and "intent" in data:
+            # Fallback if LLM just returned a single object instead of array
+            intents_data = [data]
+            
+        results = []
+        for item in intents_data:
+            results.append(ClassifiedIntent(
+                intent=item.get("intent", "note"),
+                plugin=item.get("plugin", ""),
+                confidence=float(item.get("confidence", 0.5)),
+                fields=item.get("fields", {}),
+                reasoning=item.get("reasoning", "LLM classification"),
+            ))
+        return results if results else [self._rule_classify(text)]
 
     def _rule_classify(self, text: str) -> ClassifiedIntent:
         """Rule-based fallback when LLM is unavailable."""
@@ -204,9 +218,9 @@ class IntentClassifier:
             action["end_time"] = intent.fields.get("end_time", "")
 
         elif intent.intent == "send_email":
-            action["recipient"] = intent.fields.get("recipient", "")
+            action["to"] = intent.fields.get("recipient", "")
             action["subject"] = intent.fields.get("subject", "")
-            action["text"] = intent.fields.get("text", "")
+            action["body"] = intent.fields.get("text", "")
             action["title"] = f"Email {intent.fields.get('recipient', '')}"
 
         else:

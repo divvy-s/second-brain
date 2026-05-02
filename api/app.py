@@ -117,26 +117,29 @@ def create_app() -> FastAPI:
         svc.event_bus.publish(event)
 
         # 2. Use the AI Intent Classifier to understand what the user wants
-        intent = svc.classifier.classify(request.text)
-        action = svc.classifier.to_action(intent, source_event_id=event.id)
+        intents = svc.classifier.classify(request.text)
+        
+        # 3. Submit each action to the Approval Gate (creates pending requests)
+        intent_responses = []
+        for intent in intents:
+            action = svc.classifier.to_action(intent, source_event_id=event.id)
+            svc.approval_gate.evaluate(action)
+            intent_responses.append({
+                "type": intent.intent,
+                "plugin": intent.plugin,
+                "confidence": intent.confidence,
+                "fields": intent.fields,
+                "reasoning": intent.reasoning,
+            })
 
-        # 3. Submit the action to the Approval Gate (creates a pending request)
-        gate_result = svc.approval_gate.evaluate(action)
-
-        # 4. Return everything — event, classified intent, and approval status
+        # 4. Return everything — event, classified intents, and approval status
         pending = [
             r.__dict__ for r in svc.approval_gate.store.list("pending")
             if str(r.action.get("source_event_id")) == event.id
         ]
         return {
             "event": event.to_dict(),
-            "intent": {
-                "type": intent.intent,
-                "plugin": intent.plugin,
-                "confidence": intent.confidence,
-                "fields": intent.fields,
-                "reasoning": intent.reasoning,
-            },
+            "intents": intent_responses,
             "approvals": pending,
         }
 
