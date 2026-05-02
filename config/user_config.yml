@@ -12,7 +12,7 @@ llm:
     provider: "xai"
     base_url: "https://api.x.ai/v1"
     api_key_env: "XAI_API_KEY"
-    model: "grok-4"
+    model: "grok-3"
   fallback:
     provider: "openrouter"
     base_url: "https://openrouter.ai/api/v1"

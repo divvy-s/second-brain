@@ -1,9 +1,13 @@
 from __future__ import annotations
 
+from dotenv import load_dotenv
+
+load_dotenv()
+
 from pathlib import Path
 
 from connectors.config import load_config
-from connectors.runner import ConnectorRunner
+from connectors.runner import ConnectorRunner, PluginRegistry
 from memory.database import MemoryDatabase
 from memory.event_bus import EventBus
 from memory.knowledge_graph import KnowledgeGraph
@@ -21,7 +25,8 @@ def main() -> int:
     bus = EventBus(memory_config.get("redis_url", "redis://localhost:6379/0"))
     extractor = EntityExtractor(memory_config.get("spacy_model", "en_core_web_sm"))
     graph = KnowledgeGraph(database)
-    runner = ConnectorRunner()
+    registry = PluginRegistry(root_dir=root)
+    runner = ConnectorRunner(registry=registry)
     count = 0
     for event in runner.fetch_all_events():
         event.entities = [entity.to_dict() for entity in extractor.extract(f"{event.title}\n{event.body}")]
