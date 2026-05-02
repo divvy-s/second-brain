@@ -4,7 +4,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-import uvicorn
+import uvicorn  # noqa: E402 — must follow load_dotenv() so env vars are set before module init
 
 
 def main() -> int:

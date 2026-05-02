@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import unittest
 import uuid
 from pathlib import Path
@@ -56,7 +57,7 @@ class OrchestrationTests(unittest.TestCase):
             body="The launch is blocked and needs approval today.",
             importance=0.8,
         )
-        state = workflow.run([event])
+        state = asyncio.run(workflow.run([event]))
         self.assertTrue(state["prioritized"])
         self.assertTrue(state["retrievals"])
         self.assertTrue(state["recommendations"])

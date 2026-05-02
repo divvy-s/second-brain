@@ -113,22 +113,40 @@ def has_mock_events(config: dict[str, Any]) -> bool:
     return bool(config.get("mock_events"))
 
 
+import sqlite3
+from pathlib import Path
+
+def _get_db_path() -> str:
+    app_root = Path(__file__).resolve().parents[1]
+    # Simple hardcoded path for the CLI, in a real app would parse config
+    return str(app_root / "data" / "second_brain.sqlite3")
+
 def google_oauth_credentials(config: dict[str, Any]) -> dict[str, str]:
-    return {
+    creds = {
         "client_id": resolve_secret(config, "client_id") or os.environ.get("GOOGLE_CLIENT_ID", ""),
         "client_secret": resolve_secret(config, "client_secret") or os.environ.get("GOOGLE_CLIENT_SECRET", ""),
+        "access_token": "",
         "refresh_token": resolve_secret(config, "refresh_token") or os.environ.get("GOOGLE_REFRESH_TOKEN", ""),
     }
-
+    try:
+        with sqlite3.connect(_get_db_path()) as conn:
+            conn.row_factory = sqlite3.Row
+            row = conn.execute("SELECT access_token, refresh_token FROM oauth_tokens WHERE provider = 'google'").fetchone()
+            if row:
+                creds["access_token"] = row["access_token"]
+                if row["refresh_token"]:
+                    creds["refresh_token"] = row["refresh_token"]
+    except Exception:
+        pass
+    return creds
 
 def can_refresh_google_token(config: dict[str, Any]) -> bool:
     creds = google_oauth_credentials(config)
-    return all(creds.values())
-
+    return bool(creds.get("client_id") and creds.get("client_secret") and creds.get("refresh_token"))
 
 def refresh_google_access_token(config: dict[str, Any]) -> str:
     creds = google_oauth_credentials(config)
-    if not all(creds.values()):
+    if not can_refresh_google_token(config):
         return ""
     response = http_form(
         "https://oauth2.googleapis.com/token",
@@ -139,7 +157,26 @@ def refresh_google_access_token(config: dict[str, Any]) -> str:
             "grant_type": "refresh_token",
         },
     )
-    return str(response.get("access_token") or "")
+    new_access_token = str(response.get("access_token") or "")
+    if new_access_token:
+        # Save back to database
+        try:
+            expires_in = int(response.get("expires_in", 3600))
+            expires_at = int(time.time()) + expires_in
+            with sqlite3.connect(_get_db_path()) as conn:
+                conn.execute(
+                    """
+                    INSERT INTO oauth_tokens(provider, access_token, refresh_token, expires_at)
+                    VALUES (?, ?, ?, ?)
+                    ON CONFLICT(provider) DO UPDATE SET
+                        access_token = excluded.access_token,
+                        expires_at = excluded.expires_at
+                    """,
+                    ("google", new_access_token, creds["refresh_token"], expires_at)
+                )
+        except Exception:
+            pass
+    return new_access_token
 
 
 def google_http_json(
@@ -150,7 +187,8 @@ def google_http_json(
     payload: dict[str, Any] | None = None,
     timeout: int = 20,
 ) -> dict[str, Any]:
-    token = resolve_secret(config, "access_token")
+    creds = google_oauth_credentials(config)
+    token = creds.get("access_token") or resolve_secret(config, "access_token")
     for attempt in range(2):
         if not token and can_refresh_google_token(config):
             token = refresh_google_access_token(config)
@@ -173,7 +211,8 @@ def google_http_json(
 
 
 def gmail_fetch(config: dict[str, Any]) -> dict[str, Any]:
-    token = resolve_secret(config, "access_token")
+    creds = google_oauth_credentials(config)
+    token = creds.get("access_token") or resolve_secret(config, "access_token")
     if not token and not can_refresh_google_token(config):
         return {"ok": True, "events": normalize_mock_events("gmail", config)}
     max_results = int(config.get("max_results", 10))
@@ -379,7 +418,8 @@ def whatsapp_action(config: dict[str, Any], action: dict[str, Any]) -> dict[str,
 
 
 def calendar_fetch(config: dict[str, Any]) -> dict[str, Any]:
-    token = resolve_secret(config, "access_token")
+    creds = google_oauth_credentials(config)
+    token = creds.get("access_token") or resolve_secret(config, "access_token")
     if not token and not can_refresh_google_token(config):
         return {"ok": True, "events": normalize_mock_events("calendar", config)}
     now = datetime.now(timezone.utc).isoformat()
@@ -444,7 +484,7 @@ def todoist_fetch(config: dict[str, Any]) -> dict[str, Any]:
         return {"ok": True, "events": normalize_mock_events("todoist", config)}
     data = http_json("GET", "https://api.todoist.com/api/v1/tasks", headers={"Authorization": f"Bearer {token}"})
     events: list[dict[str, Any]] = []
-    items = data if isinstance(data, list) else data.get("items", [])
+    items = data if isinstance(data, list) else data.get("results", [])
     for item in items:
         events.append(
             {
@@ -476,7 +516,9 @@ def todoist_action(config: dict[str, Any], action: dict[str, Any]) -> dict[str, 
 def health(service: str, config: dict[str, Any]) -> dict[str, Any]:
     mock_enabled = has_mock_events(config)
     if service in {"gmail", "calendar"}:
-        live_configured = bool(resolve_secret(config, "access_token")) or can_refresh_google_token(config)
+        creds = google_oauth_credentials(config)
+        token = creds.get("access_token") or resolve_secret(config, "access_token")
+        live_configured = bool(token) or can_refresh_google_token(config)
         if not live_configured:
             return {"ok": True, "healthy": False, "mode": "mock" if mock_enabled else "unconfigured", "mock_enabled": mock_enabled}
         try:

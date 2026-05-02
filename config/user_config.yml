@@ -36,24 +36,10 @@ plugins:
     enabled: true
     access_token_env: "GMAIL_ACCESS_TOKEN"
     max_results: 10
-    mock_events:
-      - id: "gmail-demo-1"
-        kind: "email"
-        title: "Quarterly planning notes"
-        body: "Asha shared the quarterly planning notes and asked for feedback by Friday."
-        participants: ["asha@example.com"]
-        importance: 0.72
   slack:
     enabled: true
     bot_token_env: "SLACK_BOT_TOKEN"
     channel_ids: []
-    mock_events:
-      - id: "slack-demo-1"
-        kind: "message"
-        title: "Launch channel update"
-        body: "Devon flagged the launch checklist as blocked on security review."
-        participants: ["devon"]
-        importance: 0.68
   whatsapp:
     enabled: true
     api_key_env: "WHATSAPP_API_KEY"
@@ -61,42 +47,14 @@ plugins:
     recipient_id_env: "WHATSAPP_RECIPIENT_ID"
     api_version: "v22.0"
     base_url: "https://graph.facebook.com"
-    mock_events:
-      - id: "whatsapp-demo-1"
-        kind: "message"
-        title: "Family travel"
-        body: "Mom asked to confirm the Sunday train tickets."
-        participants: ["mom"]
-        importance: 0.58
   telegram:
     enabled: true
     bot_token_env: "TELEGRAM_BOT_TOKEN"
     chat_id_env: "TELEGRAM_CHAT_ID"
     webhook_secret_env: "TELEGRAM_WEBHOOK_SECRET"
-    mock_events:
-      - id: "telegram-demo-1"
-        kind: "message"
-        title: "Bot approval channel"
-        body: "Approval channel is ready to receive action confirmations."
-        participants: ["second-brain-bot"]
-        importance: 0.5
   calendar:
     enabled: true
     access_token_env: "CALENDAR_ACCESS_TOKEN"
-    mock_events:
-      - id: "calendar-demo-1"
-        kind: "event"
-        title: "Weekly Sync"
-        body: "Discuss project updates and blockers."
-        participants: ["team@example.com"]
-        importance: 0.8
   todoist:
     enabled: true
     api_key_env: "TODOIST_API_KEY"
-    mock_events:
-      - id: "todoist-demo-1"
-        kind: "task"
-        title: "Review PR"
-        body: "Review the new auth implementation."
-        participants: []
-        importance: 0.6

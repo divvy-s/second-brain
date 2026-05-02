@@ -12,8 +12,8 @@ class ConfigTests(unittest.TestCase):
         config = load_config(root / "config" / "user_config.yml")
         self.assertIn("plugins", config)
         self.assertTrue(config["plugins"]["gmail"]["enabled"])
-        self.assertEqual(config["plugins"]["gmail"]["mock_events"][0]["id"], "gmail-demo-1")
-        self.assertEqual(config["plugins"]["gmail"]["mock_events"][0]["participants"], ["asha@example.com"])
+        self.assertEqual(config["plugins"]["gmail"]["access_token_env"], "GMAIL_ACCESS_TOKEN")
+        self.assertEqual(config["plugins"]["gmail"]["max_results"], 10)
         self.assertEqual(config["plugins"]["slack"]["channel_ids"], [])
 
 

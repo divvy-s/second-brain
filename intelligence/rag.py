@@ -18,7 +18,7 @@ class ContextAwareRAG:
         self.retriever = retriever
         self.llm = llm
 
-    def answer(self, question: str, limit: int = 8) -> RAGAnswer:
+    async def answer(self, question: str, limit: int = 8) -> RAGAnswer:
         result = self.retriever.retrieve(question, limit=limit)
         hits = result.hits
         context = self._format_context(result)
@@ -33,7 +33,7 @@ class ContextAwareRAG:
             {"role": "user", "content": f"Question:\n{question}\n\nContext:\n{context}"},
         ]
         try:
-            response = self.llm.complete(LLMRequest(messages=messages, temperature=0.2, max_tokens=900))
+            response = await self.llm.complete(LLMRequest(messages=messages, temperature=0.2, max_tokens=900))
             return RAGAnswer(response.content, [hit.event.id for hit in hits], True)
         except LLMUnavailable:
             if not hits:

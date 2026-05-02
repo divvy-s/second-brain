@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import math
@@ -35,19 +36,25 @@ class VectorStore:
         self.path = Path(path)
         self.collection_name = collection_name
         self.path.mkdir(parents=True, exist_ok=True)
-        self._collection = self._connect_chroma()
         self._local_path = self.path / "local_vector_store.json"
         self._local_items = self._load_local_items()
+        self._client = None
+        self._collection = None
+        self._ready = asyncio.Event()
 
-    def _connect_chroma(self) -> Any | None:
+    def initialize(self) -> None:
+        """Initialize ChromaDB connection synchronously."""
         try:
             import chromadb
-
-            client = chromadb.PersistentClient(path=str(self.path))
-            return client.get_or_create_collection(self.collection_name)
+            self._client = chromadb.PersistentClient(path=str(self.path))
+            self._collection = self._client.get_or_create_collection(self.collection_name)
+            self._ready.set()
         except Exception as exc:
-            logger.warning("ChromaDB unavailable, falling back to local vector store: %s", exc)
-            return None
+            logger.warning("ChromaDB unavailable: %s", exc)
+
+    async def initialize_async(self) -> None:
+        """Initialize ChromaDB connection asynchronously."""
+        await asyncio.to_thread(self.initialize)
 
     def _load_local_items(self) -> dict[str, dict[str, Any]]:
         if not self._local_path.exists():

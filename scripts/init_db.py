@@ -4,10 +4,10 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-from pathlib import Path
+from pathlib import Path  # noqa: E402 — must follow load_dotenv() so env vars are set before module init
 
-from connectors.config import load_config
-from memory.database import MemoryDatabase
+from connectors.config import load_config  # noqa: E402
+from memory.database import MemoryDatabase  # noqa: E402
 
 
 def main() -> int:
