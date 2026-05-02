@@ -1,0 +1,65 @@
+user:
+  id: "local-user"
+  timezone: "UTC"
+  approval_risk_threshold: "medium"
+memory:
+  sqlite_path: "data/second_brain.sqlite3"
+  chroma_path: "data/chroma"
+  redis_url: "redis://localhost:6379/0"
+  spacy_model: "en_core_web_sm"
+llm:
+  primary:
+    provider: "xai"
+    base_url: "https://api.x.ai/v1"
+    api_key_env: "XAI_API_KEY"
+    model: "grok-4"
+  fallback:
+    provider: "openrouter"
+    base_url: "https://openrouter.ai/api/v1"
+    api_key_env: "OPENROUTER_API_KEY"
+    model: "openai/gpt-4.1-mini"
+plugins:
+  gmail:
+    enabled: true
+    access_token_env: "GMAIL_ACCESS_TOKEN"
+    max_results: 10
+    mock_events:
+      - id: "gmail-demo-1"
+        kind: "email"
+        title: "Quarterly planning notes"
+        body: "Asha shared the quarterly planning notes and asked for feedback by Friday."
+        participants: ["asha@example.com"]
+        importance: 0.72
+  slack:
+    enabled: true
+    bot_token_env: "SLACK_BOT_TOKEN"
+    channel_ids: []
+    mock_events:
+      - id: "slack-demo-1"
+        kind: "message"
+        title: "Launch channel update"
+        body: "Devon flagged the launch checklist as blocked on security review."
+        participants: ["devon"]
+        importance: 0.68
+  whatsapp:
+    enabled: true
+    api_key_env: "WHATSAPP_API_KEY"
+    base_url: ""
+    mock_events:
+      - id: "whatsapp-demo-1"
+        kind: "message"
+        title: "Family travel"
+        body: "Mom asked to confirm the Sunday train tickets."
+        participants: ["mom"]
+        importance: 0.58
+  telegram:
+    enabled: true
+    bot_token_env: "TELEGRAM_BOT_TOKEN"
+    mock_events:
+      - id: "telegram-demo-1"
+        kind: "message"
+        title: "Bot approval channel"
+        body: "Approval channel is ready to receive action confirmations."
+        participants: ["second-brain-bot"]
+        importance: 0.5
+

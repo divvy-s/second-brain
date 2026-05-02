@@ -1,0 +1,37 @@
+{
+  "plugins": [
+    {
+      "name": "gmail",
+      "module": "connectors.mcp.gmail_plugin",
+      "class": "GmailPlugin",
+      "version": "1.0.0",
+      "auth_type": "oauth",
+      "location": "built_in"
+    },
+    {
+      "name": "slack",
+      "module": "connectors.mcp.slack_plugin",
+      "class": "SlackPlugin",
+      "version": "1.0.0",
+      "auth_type": "api_key",
+      "location": "built_in"
+    },
+    {
+      "name": "whatsapp",
+      "module": "connectors.mcp.whatsapp_plugin",
+      "class": "WhatsAppPlugin",
+      "version": "1.0.0",
+      "auth_type": "api_key",
+      "location": "built_in"
+    },
+    {
+      "name": "telegram",
+      "module": "connectors.mcp.telegram_plugin",
+      "class": "TelegramPlugin",
+      "version": "1.0.0",
+      "auth_type": "api_key",
+      "location": "built_in"
+    }
+  ]
+}
+
