@@ -59,7 +59,7 @@ Rules:
 - For send_message: default plugin is "telegram" unless the user says "whatsapp" or "wa" or "email"
 - If the user says "task", "todo", "buy", "need to", "remind me", "add", "fix", "complete", "finish", "review" → intent is "create_task", plugin is "todoist"
 - If the user says "schedule", "meeting", "calendar", "appointment", "book" → intent is "create_calendar_event", plugin is "calendar"
-- CRITICAL for calendar: You MUST extract the 'start_time' accurately from the user's text and format it as an ISO8601 string using the provided CURRENT LOCAL TIME as reference.
+- CRITICAL for calendar events: You MUST extract the exact date and time requested by the user. Calculate the exact date and time relative to the provided CURRENT LOCAL TIME. Format it strictly as a valid ISO8601 string with the timezone offset (e.g., "2026-05-05T16:00:00+05:30"). If the user says "5th of may at 4 pm", your ISO string MUST represent May 5th at 16:00.
 - If the user says "email", "mail" → intent is "send_email", plugin is "gmail"
 - If nothing matches clearly → intent is "note", plugin is ""
 - Extract the recipient name and the actual message content separately
