@@ -331,7 +331,7 @@ def calendar_action(config: dict[str, Any], action: dict[str, Any]) -> dict[str,
         raise RuntimeError("Calendar access token is required for write actions")
     
     action_type = action.get("type")
-    if action_type not in ("create_calendar_draft", "create_event"):
+    if action_type not in ("create_calendar_draft", "create_event", "create_calendar_event"):
         raise ValueError(f"Unsupported Calendar action type: {action_type}")
         
     url = "https://www.googleapis.com/calendar/v3/calendars/primary/events"
@@ -339,9 +339,22 @@ def calendar_action(config: dict[str, Any], action: dict[str, Any]) -> dict[str,
     
     start_time = action.get("start_time")
     end_time = action.get("end_time")
+    
+    # If no start time is provided, default to 1 hour from now
     if not start_time:
-        start_time = (datetime.now(timezone.utc) + timedelta(days=1)).isoformat()
-        end_time = (datetime.now(timezone.utc) + timedelta(days=1, hours=1)).isoformat()
+        start_time_dt = datetime.now(timezone.utc) + timedelta(hours=1)
+        start_time = start_time_dt.isoformat()
+    else:
+        # Parse the provided start time to calculate end time if needed
+        try:
+            start_time_dt = datetime.fromisoformat(start_time.replace("Z", "+00:00"))
+        except ValueError:
+            start_time_dt = datetime.now(timezone.utc) + timedelta(hours=1)
+            start_time = start_time_dt.isoformat()
+            
+    # If no end time is provided (or it's an empty string), default to 1 hour after start time
+    if not end_time:
+        end_time = (start_time_dt + timedelta(hours=1)).isoformat()
         
     payload = {
         "summary": action.get("title", "New Event"),
@@ -359,7 +372,7 @@ def todoist_fetch(config: dict[str, Any]) -> dict[str, Any]:
     if not token:
         return {"ok": True, "events": normalize_mock_events("todoist", config)}
         
-    url = "https://api.todoist.com/rest/v2/tasks"
+    url = "https://api.todoist.com/api/v1/tasks"
     headers = {"Authorization": f"Bearer {token}"}
     data = http_json("GET", url, headers=headers)
     
@@ -390,7 +403,7 @@ def todoist_action(config: dict[str, Any], action: dict[str, Any]) -> dict[str, 
     if action_type != "create_task":
         raise ValueError(f"Unsupported Todoist action type: {action_type}")
         
-    url = "https://api.todoist.com/rest/v2/tasks"
+    url = "https://api.todoist.com/api/v1/tasks"
     headers = {"Authorization": f"Bearer {token}"}
     payload = {
         "content": action.get("title", "New Task"),

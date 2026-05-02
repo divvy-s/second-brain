@@ -109,22 +109,36 @@ def create_app() -> FastAPI:
     @app.post("/brain-dump")
     def brain_dump(request: BrainDumpRequest) -> dict[str, Any]:
         svc = services()
+
         # 1. Capture and store the event
         event = svc.capture.capture(request.text, title=request.title)
         svc.database.add_event(event)
         svc.vector_store.index_event(event)
         svc.event_bus.publish(event)
 
-        # 2. Immediately run the agents on just this event to generate approvals
-        workflow = build_workflow(svc)
-        state = workflow.run([event])
+        # 2. Use the AI Intent Classifier to understand what the user wants
+        intent = svc.classifier.classify(request.text)
+        action = svc.classifier.to_action(intent, source_event_id=event.id)
 
-        # 3. Return the event + any pending approvals that were just created
+        # 3. Submit the action to the Approval Gate (creates a pending request)
+        gate_result = svc.approval_gate.evaluate(action)
+
+        # 4. Return everything — event, classified intent, and approval status
         pending = [
             r.__dict__ for r in svc.approval_gate.store.list("pending")
             if str(r.action.get("source_event_id")) == event.id
         ]
-        return {"event": event.to_dict(), "approvals": pending}
+        return {
+            "event": event.to_dict(),
+            "intent": {
+                "type": intent.intent,
+                "plugin": intent.plugin,
+                "confidence": intent.confidence,
+                "fields": intent.fields,
+                "reasoning": intent.reasoning,
+            },
+            "approvals": pending,
+        }
 
     @app.post("/orchestrate")
     def orchestrate(request: OrchestrateRequest | None = None) -> dict[str, Any]:

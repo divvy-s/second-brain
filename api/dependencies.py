@@ -6,7 +6,7 @@ from pathlib import Path
 from connectors.config import load_config
 from connectors.runner import ConnectorRunner, PluginRegistry
 from execution import ActionExecutor, ApprovalGate, ApprovalStore, AuditLogger, RateLimiter, RiskPolicy, RollbackManager
-from intelligence import BrainDumpCapture, GoalDecomposer, LLMAdapter, PriorityScorer
+from intelligence import BrainDumpCapture, GoalDecomposer, IntentClassifier, LLMAdapter, PriorityScorer
 from memory import EntityExtractor, EventBus, HybridRetriever, MemoryDatabase, VectorStore
 from orchestration import BrainWorkflow
 
@@ -27,6 +27,7 @@ class AppServices:
     retriever: HybridRetriever
     approval_gate: ApprovalGate
     executor: ActionExecutor
+    classifier: IntentClassifier
 
     def refresh_plugins(self) -> None:
         self.runner.refresh()
@@ -53,6 +54,7 @@ def build_services(root: Path | None = None) -> AppServices:
     audit_logger = AuditLogger(database)
     rollback = RollbackManager(database)
     executor = ActionExecutor(runner, approval_gate, audit_logger, rollback, RateLimiter())
+    classifier = IntentClassifier(llm)
     return AppServices(
         root=app_root,
         config=config,
@@ -68,6 +70,7 @@ def build_services(root: Path | None = None) -> AppServices:
         retriever=retriever,
         approval_gate=approval_gate,
         executor=executor,
+        classifier=classifier,
     )
 
 
