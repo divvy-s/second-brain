@@ -163,9 +163,11 @@ cython_debug/
 .api.err.log
 
 # Data
-data/*.sqlite3
+data/*.sqlite3*
 data/chroma/
-data/second_brain.sqlite3
+
+# Accidentally created in root
+/package-lock.json
 
 # Frontend
 frontend/node_modules/

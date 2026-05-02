@@ -13,6 +13,13 @@ import urllib.request
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass
+
+
 
 def utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -263,16 +270,28 @@ def whatsapp_fetch(config: dict[str, Any]) -> dict[str, Any]:
 
 
 def whatsapp_action(config: dict[str, Any], action: dict[str, Any]) -> dict[str, Any]:
-    base_url = str(config.get("base_url") or "").rstrip("/")
     api_key = resolve_secret(config, "api_key")
-    if not base_url:
-        raise RuntimeError("WhatsApp mock API base_url is required for write actions")
-    data = http_json(
-        "POST",
-        f"{base_url}/actions",
-        headers={"Authorization": f"Bearer {api_key}"} if api_key else {},
-        payload=action,
-    )
+    phone_id = resolve_secret(config, "phone_number_id")
+    recipient = action.get("to") or resolve_secret(config, "recipient_id")
+    
+    if not api_key or not phone_id:
+        raise RuntimeError("WhatsApp API Key and Phone Number ID are required")
+    if not recipient:
+        raise ValueError("Recipient phone number is required (action.to or config.recipient_id)")
+
+    url = f"https://graph.facebook.com/v21.0/{phone_id}/messages"
+    
+    payload = {
+        "messaging_product": "whatsapp",
+        "recipient_type": "individual",
+        "to": recipient,
+        "type": "text",
+        "text": {"body": action.get("text", "No message content provided")}
+    }
+    
+    headers = {"Authorization": f"Bearer {api_key}"}
+    data = http_json("POST", url, headers=headers, payload=payload)
+    
     return {"ok": True, "result": data}
 
 def calendar_fetch(config: dict[str, Any]) -> dict[str, Any]:
