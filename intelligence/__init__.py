@@ -3,6 +3,7 @@ from intelligence.goal_decomposer import GoalDecomposer
 from intelligence.intent_classifier import IntentClassifier
 from intelligence.llm_adapter import LLMAdapter, LLMRequest, LLMResponse, LLMUnavailable
 from intelligence.priority import PriorityBreakdown, PriorityScorer
+from intelligence.recommendations import RecommendationEngine, RecommendationItem
 
 __all__ = [
     "BrainDumpCapture",
@@ -15,6 +16,8 @@ __all__ = [
     "LLMUnavailable",
     "PriorityBreakdown",
     "PriorityScorer",
+    "RecommendationEngine",
+    "RecommendationItem",
 ]
 
 

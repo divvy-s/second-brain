@@ -9,6 +9,7 @@ from execution.executor import ActionExecutor
 from intelligence.goal_decomposer import GoalDecomposer
 from intelligence.llm_adapter import LLMAdapter, LLMRequest, LLMUnavailable
 from intelligence.priority import PriorityScorer
+from intelligence.recommendations import RecommendationEngine
 from memory.database import MemoryDatabase
 from memory.event_bus import EventBus
 from memory.knowledge_graph import KnowledgeGraph
@@ -41,6 +42,7 @@ class BrainWorkflow:
         retriever: HybridRetriever | None = None,
         llm: LLMAdapter | None = None,
         event_bus: EventBus | None = None,
+        recommendation_engine: RecommendationEngine | None = None,
     ) -> None:
         self.runner = runner
         self.database = database
@@ -52,6 +54,7 @@ class BrainWorkflow:
         self.retriever = retriever or HybridRetriever(database, vector_store, scorer=scorer, extractor=extractor)
         self.llm = llm
         self.event_bus = event_bus
+        self.recommendation_engine = recommendation_engine or RecommendationEngine()
         self.graph = KnowledgeGraph(database)
         self.agents = [EmailAgent(), CalendarAgent(), TaskAgent(), NotificationAgent()]
         self._compiled_graph = self._build_langgraph()
@@ -139,6 +142,7 @@ class BrainWorkflow:
         return {"retrievals": retrievals}
 
     def plan(self, state: BrainState) -> BrainState:
+        """Turn ranked events into recommendations and decomposed execution plans."""
         plans: list[dict[str, Any]] = []
         recommendations: list[dict[str, Any]] = []
         for hit in state.get("prioritized", []):
@@ -146,7 +150,7 @@ class BrainWorkflow:
                 continue
             context_bundle = self._context_bundle(state, hit.event.id)
             self.database.increment_event_access(hit.event.id, reason="planning")
-            recommendation = self._recommend(hit, context_bundle)
+            recommendation = self.recommendation_engine.generate(hit, context_bundle)
             recommendations.append(recommendation)
             if hit.score < 0.6:
                 continue
@@ -168,18 +172,14 @@ class BrainWorkflow:
 
     def route(self, state: BrainState) -> BrainState:
         existing_requests = self.executor.approval_gate.store.list()
-        handled_event_ids = {
-            str(request.action.get("source_event_id"))
-            for request in existing_requests
-            if request.action.get("source_event_id")
-        }
+        handled_signatures = {self._action_signature(request.action) for request in existing_requests}
 
         plan_lookup = {plan["event_id"]: plan for plan in state.get("plans", [])}
         recommendation_lookup = {item["event_id"]: item for item in state.get("recommendations", [])}
 
         actions: list[dict[str, Any]] = []
         for hit in state.get("prioritized", []):
-            if hit.score < 0.5 or hit.event.id in handled_event_ids:
+            if hit.score < 0.5:
                 continue
             context = {
                 "retrieval": self._context_bundle(state, hit.event.id),
@@ -187,6 +187,18 @@ class BrainWorkflow:
                 "score": hit.score,
                 "priority_score": hit.priority_score,
             }
+            for item in context["recommendation"].get("items", []):
+                action = dict(item.get("action") or {})
+                if not action:
+                    continue
+                action.setdefault("risk", "medium")
+                action.setdefault("source_event_id", hit.event.id)
+                action["effective_score"] = hit.score
+                action["priority_score"] = hit.priority_score
+                action["recommendation_type"] = item.get("kind", context["recommendation"].get("category", "review"))
+                if self._action_signature(action) in handled_signatures:
+                    continue
+                actions.append(action)
             for agent in self.agents:
                 if agent.can_handle(hit.event):
                     decision = agent.handle(hit.event, context)
@@ -196,11 +208,11 @@ class BrainWorkflow:
                         action["effective_score"] = hit.score
                         action["priority_score"] = hit.priority_score
                         action["recommendation_type"] = context["recommendation"].get("category", "review")
+                        if self._action_signature(action) in handled_signatures:
+                            continue
                         actions.append(action)
 
         for event_id, plan in plan_lookup.items():
-            if event_id in handled_event_ids:
-                continue
             for step in plan.get("steps", []):
                 action = dict(step["action"])
                 action.setdefault("risk", step.get("risk", "medium"))
@@ -208,47 +220,34 @@ class BrainWorkflow:
                 action["effective_score"] = float(plan.get("score", 0.0))
                 action["priority_score"] = float(plan.get("priority_score", 0.0))
                 action["recommendation_type"] = str(plan.get("recommendation_type", "review"))
+                if self._action_signature(action) in handled_signatures:
+                    continue
                 actions.append(action)
 
         deduped: list[dict[str, Any]] = []
-        seen: set[tuple[str, str, str]] = set()
+        seen: set[tuple[str, str, str, str]] = set()
         for action in sorted(actions, key=lambda item: float(item.get("effective_score", 0.0)), reverse=True):
-            key = (
-                str(action.get("type")),
-                str(action.get("plugin")),
-                str(action.get("source_event_id")),
-            )
+            key = self._action_signature(action)
             if key not in seen:
                 seen.add(key)
                 deduped.append(action)
         return {"actions": deduped}
 
     def approval_execute(self, state: BrainState) -> BrainState:
+        """Execute or queue routed actions through the full safety pipeline."""
         store = self.executor.approval_gate.store
-        existing_keys: set[tuple[str, str, str]] = {
-            (
-                str(request.action.get("type")),
-                str(request.action.get("plugin")),
-                str(request.action.get("source_event_id")),
-            )
-            for request in store.list()
-            if request.status == "pending"
-        }
+        existing_keys = {self._action_signature(request.action) for request in store.list() if request.status == "pending"}
         results: list[dict[str, Any]] = []
         for action in sorted(
             state.get("actions", []),
             key=lambda item: float(item.get("effective_score", 0.0)),
             reverse=True,
         ):
-            key = (
-                str(action.get("type")),
-                str(action.get("plugin")),
-                str(action.get("source_event_id")),
-            )
+            key = self._action_signature(action)
             if key in existing_keys:
                 results.append({"status": "already_pending", "key": str(key), "effective_score": action.get("effective_score", 0.0)})
                 continue
-            result = self.executor.approval_gate.evaluate(action)
+            result = self.executor.execute(action)
             results.append(result | {"effective_score": action.get("effective_score", 0.0)})
         return {"results": results}
 
@@ -293,36 +292,6 @@ class BrainWorkflow:
         self.database.set_setting("event_bus_last_id", entries[-1][0])
         return [event for _, event in entries]
 
-    def _recommend(self, hit: RetrievalHit, context_bundle: dict[str, Any]) -> dict[str, Any]:
-        components = hit.components
-        category = "review"
-        next_best_action = "Keep this in the ranked memory queue."
-        if components.get("urgency", 0.0) >= 0.72:
-            category = "immediate_action"
-            next_best_action = "Route an action immediately and surface it at the top of approvals."
-        elif components.get("user_importance", 0.0) >= 0.72:
-            category = "planning"
-            next_best_action = "Turn this into a concrete plan and schedule follow-through."
-        elif components.get("frequency", 0.0) >= 0.5:
-            category = "long_term_tracking"
-            next_best_action = "Keep tracking this pattern and preserve it as a recurring priority."
-        structured = context_bundle.get("structured", {})
-        return {
-            "event_id": hit.event.id,
-            "score": hit.score,
-            "priority_score": hit.priority_score,
-            "category": category,
-            "reason": (
-                f"urgency={components.get('urgency', 0.0):.2f}; "
-                f"user_importance={components.get('user_importance', 0.0):.2f}; "
-                f"frequency={components.get('frequency', 0.0):.2f}"
-            ),
-            "next_best_action": next_best_action,
-            "contacts": structured.get("contacts", []),
-            "preferences": structured.get("preferences", []),
-            "entities": structured.get("entities", []),
-        }
-
     def _planning_context(
         self,
         hit: RetrievalHit,
@@ -342,4 +311,21 @@ class BrainWorkflow:
             f"structured_preferences={structured.get('preferences', [])}\n"
             f"structured_entities={structured.get('entities', [])}\n"
             + "\n".join(support_lines)
+        )
+
+    def _action_signature(self, action: dict[str, Any]) -> tuple[str, str, str, str]:
+        """Build a stable signature for deduping semantically distinct actions."""
+        marker = str(
+            action.get("title")
+            or action.get("subject")
+            or action.get("text")
+            or action.get("description")
+            or action.get("recommendation_type")
+            or ""
+        ).strip()
+        return (
+            str(action.get("type")),
+            str(action.get("plugin")),
+            str(action.get("source_event_id")),
+            marker[:160],
         )

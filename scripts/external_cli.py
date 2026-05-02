@@ -339,10 +339,16 @@ def telegram_action(config: dict[str, Any], action: dict[str, Any]) -> dict[str,
 
 
 def whatsapp_fetch(config: dict[str, Any]) -> dict[str, Any]:
-    base_url = str(config.get("base_url") or "").rstrip("/")
+    base_url = str(resolve_secret(config, "base_url") or config.get("base_url") or "").rstrip("/")
     api_key = resolve_secret(config, "api_key")
     if not base_url:
         return {"ok": True, "events": normalize_mock_events("whatsapp", config)}
+    
+    # WhatsApp Cloud API natively uses Webhooks and does not support polling via GET /events.
+    # If the user is using the raw Facebook Graph API URL, bypass the fetch to prevent 400 errors.
+    if "graph.facebook.com" in base_url:
+        return {"ok": True, "events": []}
+
     data = http_json("GET", f"{base_url}/events", headers={"Authorization": f"Bearer {api_key}"} if api_key else {})
     events = []
     for item in data.get("events", []):

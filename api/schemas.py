@@ -27,8 +27,19 @@ class ActionRequest(BaseModel):
     action: dict[str, Any]
 
 
+class RollbackRequest(BaseModel):
+    action_id: str
+
+
 class ApprovalDecisionRequest(BaseModel):
     request_id: str
+
+
+class FeedbackRequest(BaseModel):
+    event_id: str | None = None
+    action_id: str | None = None
+    rating: int = Field(ge=-1, le=1)
+    note: str = ""
 
 
 class OrchestrateRequest(BaseModel):

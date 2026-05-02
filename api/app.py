@@ -14,14 +14,17 @@ from api.schemas import (
     ActionRequest,
     ApprovalDecisionRequest,
     BrainDumpRequest,
+    FeedbackRequest,
     OrchestrateRequest,
     PluginInstallRequest,
     PluginNameRequest,
     RetrievalRequest,
+    RollbackRequest,
     TelegramWebhookRequest,
 )
 from api.telegram_bot import TelegramApprovalBot
 from connectors.base import ContextEvent
+from orchestration import ProactiveLoopManager
 
 
 def _retrieval_hit_to_json(hit: Any) -> dict[str, Any]:
@@ -82,6 +85,44 @@ def _telegram_secret(config: dict[str, Any]) -> str:
     return str(os.environ.get(env_name, "")).strip() or str(telegram_config.get("webhook_secret", "")).strip()
 
 
+def _env_bool(name: str, default: bool) -> bool:
+    value = os.environ.get(name)
+    if value is None or not value.strip():
+        return default
+    return value.strip().lower() not in {"0", "false", "no", "off"}
+
+
+def _env_float(name: str, default: float) -> float:
+    value = os.environ.get(name)
+    if value is None or not value.strip():
+        return default
+    try:
+        return float(value)
+    except ValueError:
+        return default
+
+
+def _proactive_loop_settings(config: dict[str, Any]) -> dict[str, float | bool]:
+    orchestration_config = config.get("orchestration", {})
+    enabled = _env_bool(
+        "SECOND_BRAIN_PROACTIVE_LOOP_ENABLED",
+        bool(orchestration_config.get("proactive_loop_enabled", True)),
+    )
+    interval_minutes = _env_float(
+        "SECOND_BRAIN_PROACTIVE_LOOP_INTERVAL_MINUTES",
+        float(orchestration_config.get("proactive_loop_interval_minutes", 30.0)),
+    )
+    stale_minutes = _env_float(
+        "SECOND_BRAIN_STALE_APPROVAL_MINUTES",
+        float(orchestration_config.get("stale_approval_minutes", 180.0)),
+    )
+    return {
+        "enabled": enabled,
+        "interval_minutes": max(1.0, interval_minutes),
+        "stale_approval_minutes": max(1.0, stale_minutes),
+    }
+
+
 def create_app() -> FastAPI:
     services_obj = build_services()
     app = FastAPI(title="Second Brain", version="0.1.0")
@@ -104,9 +145,25 @@ def create_app() -> FastAPI:
         )
 
     app.state.services = services_obj
+    loop_settings = _proactive_loop_settings(services_obj.config)
+    app.state.proactive_loop = ProactiveLoopManager(
+        services_obj,
+        build_workflow,
+        interval_minutes=float(loop_settings["interval_minutes"]),
+        stale_approval_minutes=float(loop_settings["stale_approval_minutes"]),
+        enabled=bool(loop_settings["enabled"]),
+    )
 
     def services() -> AppServices:
         return app.state.services
+
+    @app.on_event("startup")
+    async def startup_proactive_loop() -> None:
+        app.state.proactive_loop.start()
+
+    @app.on_event("shutdown")
+    async def shutdown_proactive_loop() -> None:
+        app.state.proactive_loop.stop()
 
     @app.middleware("http")
     async def auth_middleware(request: Request, call_next):
@@ -134,6 +191,7 @@ def create_app() -> FastAPI:
             "redis_backed": svc.event_bus.is_redis_backed,
             "llm_configured": svc.llm.is_configured(),
             "api_auth_configured": bool(_api_token(svc.config)),
+            "proactive_loop": app.state.proactive_loop.snapshot(),
         }
 
     @app.get("/plugins/list")
@@ -191,9 +249,10 @@ def create_app() -> FastAPI:
 
         intents = svc.classifier.classify(request.text)
         intent_responses = []
+        action_results = []
         for intent in intents:
             action = svc.classifier.to_action(intent, source_event_id=stored_event.id)
-            svc.approval_gate.evaluate(action)
+            action_results.append(svc.executor.execute(action))
             intent_responses.append(
                 {
                     "type": intent.intent,
@@ -212,6 +271,7 @@ def create_app() -> FastAPI:
         return {
             "event": stored_event.to_dict(),
             "intents": intent_responses,
+            "action_results": action_results,
             "approvals": pending,
         }
 
@@ -224,6 +284,31 @@ def create_app() -> FastAPI:
     @app.post("/actions/execute")
     def execute_action(request: ActionRequest) -> dict[str, Any]:
         return services().executor.execute(request.action)
+
+    @app.post("/actions/rollback")
+    def rollback_action(request: RollbackRequest) -> dict[str, Any]:
+        return services().executor.rollback_action(request.action_id)
+
+    @app.get("/audit/logs")
+    def audit_logs(limit: int = 100, status: str | None = None) -> dict[str, Any]:
+        return {"logs": services().database.list_action_logs(limit=limit, status=status)}
+
+    @app.post("/feedback")
+    def feedback(request: FeedbackRequest) -> dict[str, Any]:
+        services().database.record_feedback(
+            event_id=request.event_id,
+            action_id=request.action_id,
+            rating=request.rating,
+            note=request.note,
+        )
+        if request.event_id:
+            if request.rating > 0:
+                services().database.adjust_event_importance(request.event_id, 0.04)
+                services().database.adjust_event_reinforcement(request.event_id, 0.08)
+            elif request.rating < 0:
+                services().database.adjust_event_importance(request.event_id, -0.08)
+                services().database.adjust_event_reinforcement(request.event_id, -0.14)
+        return {"ok": True}
 
     @app.get("/approvals/list")
     def approvals_list(status: str | None = None) -> dict[str, Any]:
@@ -245,6 +330,19 @@ def create_app() -> FastAPI:
             return {"request": asdict(rejected)}
         except KeyError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    @app.post("/approvals/ignore")
+    def approvals_ignore(request: ApprovalDecisionRequest) -> dict[str, Any]:
+        try:
+            ignored = services().approval_gate.ignore(request.request_id)
+            return {"request": asdict(ignored)}
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    @app.post("/proactive/run-once")
+    def proactive_run_once() -> dict[str, Any]:
+        summary = app.state.proactive_loop.run_cycle()
+        return {"summary": summary, "state": app.state.proactive_loop.snapshot()}
 
     @app.post("/telegram/webhook")
     def telegram_webhook(raw_request: Request, request: TelegramWebhookRequest) -> dict[str, Any]:

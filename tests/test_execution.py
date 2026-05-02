@@ -56,6 +56,31 @@ class ExecutionTests(unittest.TestCase):
         self.assertEqual(result["status"], "executed")
         self.assertGreaterEqual(database.get_event_stats(event.id).execution_count, 1)
 
+    def test_risk_policy_returns_numeric_assessment(self) -> None:
+        assessment = RiskPolicy("medium").assess(
+            {"type": "send_email", "plugin": "gmail", "to": "a@example.com", "risk": "medium"}
+        )
+        self.assertEqual(assessment.level, "high")
+        self.assertGreater(assessment.score, 0.7)
+        self.assertTrue(assessment.requires_approval)
+        self.assertTrue(assessment.reasons)
+
+    def test_rejected_approval_reduces_event_importance(self) -> None:
+        executor = self.build_executor()
+        database = executor._test_database  # type: ignore[attr-defined]
+        event = ContextEvent(source="mcp_gmail", kind="email", title="Needs approval", body="Approve the draft", importance=0.8)
+        database.add_event(event, semantic_summary="Needs approval")
+        before = database.get_event(event.id)
+        pending = executor.execute(
+            {"type": "send_email", "plugin": "gmail", "risk": "medium", "to": "a@example.com", "source_event_id": event.id}
+        )
+        self.assertEqual(pending["status"], "pending_approval")
+        executor.approval_gate.reject(pending["approval_request_id"])
+        after = database.get_event(event.id)
+        self.assertIsNotNone(before)
+        self.assertIsNotNone(after)
+        self.assertLess(after.importance, before.importance)
+
 
 if __name__ == "__main__":
     unittest.main()

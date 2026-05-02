@@ -22,6 +22,7 @@ export function App() {
   const [health, setHealth] = useState<Record<string, unknown>>({});
   const [approvals, setApprovals] = useState<ApprovalRequest[]>([]);
   const [hits, setHits] = useState<Array<{ event: ContextEvent; score: number }>>([]);
+  const [apiToken, setApiToken] = useState(api.getToken());
   const [captureText, setCaptureText] = useState("");
   const [query, setQuery] = useState("");
   const [lastRun, setLastRun] = useState<Record<string, unknown> | null>(null);
@@ -135,9 +136,22 @@ export function App() {
             <span>{enabledCount} plugins enabled</span>
           </div>
         </div>
-        <button className="icon-button" onClick={refresh} title="Refresh">
-          {loadState === "loading" ? <Loader2 className="spin" size={18} /> : <RefreshCw size={18} />}
-        </button>
+        <div className="topbar-actions">
+          <input
+            className="token-input"
+            type="password"
+            value={apiToken}
+            onChange={(e) => {
+              const nextValue = e.target.value;
+              setApiToken(nextValue);
+              api.setToken(nextValue);
+            }}
+            placeholder="API token"
+          />
+          <button className="icon-button" onClick={refresh} title="Refresh">
+            {loadState === "loading" ? <Loader2 className="spin" size={18} /> : <RefreshCw size={18} />}
+          </button>
+        </div>
       </header>
 
       {error && <div className="notice error">{error}</div>}
