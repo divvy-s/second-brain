@@ -237,7 +237,7 @@ def telegram_fetch(config: dict[str, Any]) -> dict[str, Any]:
 
 def telegram_action(config: dict[str, Any], action: dict[str, Any]) -> dict[str, Any]:
     token = resolve_secret(config, "bot_token")
-    chat_id = action.get("chat_id") or resolve_secret(config, "chat_id")
+    chat_id = action.get("chat_id") or action.get("recipient") or resolve_secret(config, "chat_id")
     
     if not token:
         raise RuntimeError("Telegram bot token is required for write actions")
@@ -277,12 +277,15 @@ def whatsapp_fetch(config: dict[str, Any]) -> dict[str, Any]:
 def whatsapp_action(config: dict[str, Any], action: dict[str, Any]) -> dict[str, Any]:
     api_key = resolve_secret(config, "api_key")
     phone_id = resolve_secret(config, "phone_number_id")
-    recipient = action.get("to") or resolve_secret(config, "recipient_id")
+    recipient = action.get("to") or action.get("recipient") or resolve_secret(config, "recipient_id")
     
     if not api_key or not phone_id:
         raise RuntimeError("WhatsApp API Key and Phone Number ID are required")
     if not recipient:
         raise ValueError("Recipient phone number is required (action.to or config.recipient_id)")
+
+    # Sanitize: keep only digits
+    recipient = "".join(filter(str.isdigit, str(recipient)))
 
     url = f"https://graph.facebook.com/v21.0/{phone_id}/messages"
     

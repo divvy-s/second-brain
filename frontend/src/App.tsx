@@ -113,7 +113,16 @@ export function App() {
     const type = String(action.type ?? "action");
     const plugin = String(action.plugin ?? "");
     const title = String(action.title ?? action.text ?? action.subject ?? "");
-    return [type, plugin && `→ ${plugin}`, title && `"${title}"`].filter(Boolean).join(" ");
+    let titleStr = title ? `"${title}"` : "";
+    if (action.start_time) {
+      try {
+        const d = new Date(action.start_time as string);
+        titleStr += ` (at ${d.toLocaleString()})`;
+      } catch (e) {
+        titleStr += ` (${action.start_time})`;
+      }
+    }
+    return [type, plugin && `→ ${plugin}`, titleStr].filter(Boolean).join(" ");
   }
 
   return (

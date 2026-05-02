@@ -59,6 +59,7 @@ Rules:
 - For send_message: default plugin is "telegram" unless the user says "whatsapp" or "wa" or "email"
 - If the user says "task", "todo", "buy", "need to", "remind me", "add", "fix", "complete", "finish", "review" → intent is "create_task", plugin is "todoist"
 - If the user says "schedule", "meeting", "calendar", "appointment", "book" → intent is "create_calendar_event", plugin is "calendar"
+- CRITICAL for calendar: You MUST extract the 'start_time' accurately from the user's text and format it as an ISO8601 string using the provided CURRENT LOCAL TIME as reference.
 - If the user says "email", "mail" → intent is "send_email", plugin is "gmail"
 - If nothing matches clearly → intent is "note", plugin is ""
 - Extract the recipient name and the actual message content separately
@@ -79,11 +80,19 @@ class IntentClassifier:
         if self.llm.is_configured():
             try:
                 return self._llm_classify(text)
-            except (LLMUnavailable, json.JSONDecodeError, KeyError, TypeError, ValueError):
+            except Exception:
+                # Log or handle error if needed, falling back to rules
                 pass
 
-        # Fall back to rules
-        return [self._rule_classify(text)]
+        # Fall back to rules — with support for simple splitting
+        # Split on " and " or "," to handle multiple simple tasks
+        parts = re.split(r"\s+and\s+|\s*,\s*", text)
+        results = []
+        for part in parts:
+            if part.strip():
+                results.append(self._rule_classify(part.strip()))
+        
+        return results if results else [self._rule_classify(text)]
 
     def _llm_classify(self, text: str) -> list[ClassifiedIntent]:
         """Use the LLM to classify intent."""
@@ -127,8 +136,8 @@ class IntentClassifier:
 
         # --- Send Message patterns ---
         msg_patterns = [
-            r"^(?:message|msg|tell|text|send|inform|let|ping|notify|whatsapp|wa)\s+(\w+)\s+(.+)",
-            r"^(?:message|msg|tell|text|send|inform|ping|notify|whatsapp|wa)\s+(\w+)\s+that\s+(.+)",
+            r"^(?:message|msg|tell|text|send|inform|let|ping|notify|whatsapp|wa)\s+([\w\.\-\+@]+)\s+(.+)",
+            r"^(?:message|msg|tell|text|send|inform|ping|notify|whatsapp|wa)\s+([\w\.\-\+@]+)\s+that\s+(.+)",
         ]
         for pattern in msg_patterns:
             m = re.match(pattern, lower, re.I)
@@ -161,14 +170,23 @@ class IntentClassifier:
             )
 
         # --- Email patterns ---
-        email_match = re.match(r"^(?:email|mail)\s+(\w+)\s+(.+)", lower, re.I)
+        email_match = re.match(r"^(?:email|mail)\s+([\w\.\-\+@]+)\s+(.+)", lower, re.I)
         if email_match:
             return ClassifiedIntent(
                 intent="send_email",
                 plugin="gmail",
                 confidence=0.8,
-                fields={"recipient": email_match.group(1), "subject": email_match.group(2), "text": email_match.group(2)},
+                fields={"recipient": email_match.group(1), "subject": "Second Brain Message", "text": email_match.group(2)},
                 reasoning="Matched email pattern",
+            )
+        
+        if lower.startswith("email") or lower.startswith("mail"):
+             return ClassifiedIntent(
+                intent="send_email",
+                plugin="gmail",
+                confidence=0.7,
+                fields={"recipient": "", "subject": "Second Brain Message", "text": text},
+                reasoning="Matched email keyword at start",
             )
 
         # --- Task patterns (broad catch) ---

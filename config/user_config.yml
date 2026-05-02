@@ -9,10 +9,10 @@ memory:
   spacy_model: "en_core_web_sm"
 llm:
   primary:
-    provider: "xai"
-    base_url: "https://api.x.ai/v1"
-    api_key_env: "XAI_API_KEY"
-    model: "grok-3"
+    provider: "gemini"
+    base_url: "https://generativelanguage.googleapis.com/v1beta/openai/"
+    api_key_env: "GEMINI_API_KEY"
+    model: "gemini-2.5-flash"
   fallback:
     provider: "openrouter"
     base_url: "https://openrouter.ai/api/v1"
