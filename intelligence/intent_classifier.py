@@ -12,8 +12,9 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from intelligence.llm_adapter import LLMAdapter, LLMRequest, LLMUnavailable
 
@@ -71,8 +72,9 @@ Rules:
 class IntentClassifier:
     """Classifies brain dump text into structured intents using LLM with rule-based fallback."""
 
-    def __init__(self, llm: LLMAdapter) -> None:
+    def __init__(self, llm: LLMAdapter, timezone_name: str = "UTC") -> None:
         self.llm = llm
+        self.timezone_name = timezone_name
 
     def classify(self, text: str) -> list[ClassifiedIntent]:
         """Classify the user's text into a structured intent."""
@@ -96,11 +98,14 @@ class IntentClassifier:
 
     def _llm_classify(self, text: str) -> list[ClassifiedIntent]:
         """Use the LLM to classify intent."""
-        ist_tz = timezone(timedelta(hours=5, minutes=30))
+        try:
+            local_tz = ZoneInfo(self.timezone_name)
+        except Exception:
+            local_tz = timezone.utc
         messages = [
             {
                 "role": "system",
-                "content": SYSTEM_PROMPT + f"\n\nCURRENT LOCAL TIME (IST): {datetime.now(ist_tz).isoformat()}"
+                "content": SYSTEM_PROMPT + f"\n\nCURRENT LOCAL TIME ({self.timezone_name}): {datetime.now(local_tz).isoformat()}"
             },
             {"role": "user", "content": text},
         ]

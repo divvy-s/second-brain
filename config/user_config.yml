@@ -2,11 +2,24 @@ user:
   id: "local-user"
   timezone: "UTC"
   approval_risk_threshold: "medium"
+api:
+  auth_token_env: "SECRET_KEY"
+  allowed_origins:
+    - "http://localhost:5173"
+    - "http://127.0.0.1:5173"
 memory:
   sqlite_path: "data/second_brain.sqlite3"
   chroma_path: "data/chroma"
   redis_url: "redis://localhost:6379/0"
   spacy_model: "en_core_web_sm"
+  half_life_days: 30
+priority:
+  weights:
+    recency: 0.22
+    relevance: 0.27
+    user_importance: 0.21
+    urgency: 0.20
+    frequency: 0.10
 llm:
   primary:
     provider: "gemini"
@@ -46,6 +59,7 @@ plugins:
     api_key_env: "WHATSAPP_API_KEY"
     phone_number_id_env: "WHATSAPP_PHONE_NUMBER_ID"
     recipient_id_env: "WHATSAPP_RECIPIENT_ID"
+    api_version: "v22.0"
     base_url: "https://graph.facebook.com"
     mock_events:
       - id: "whatsapp-demo-1"
@@ -58,6 +72,7 @@ plugins:
     enabled: true
     bot_token_env: "TELEGRAM_BOT_TOKEN"
     chat_id_env: "TELEGRAM_CHAT_ID"
+    webhook_secret_env: "TELEGRAM_WEBHOOK_SECRET"
     mock_events:
       - id: "telegram-demo-1"
         kind: "message"

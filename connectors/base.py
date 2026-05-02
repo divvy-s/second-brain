@@ -111,6 +111,9 @@ class BaseConnector(ABC):
     def health_check(self) -> bool:
         raise NotImplementedError
 
+    def health_status(self) -> dict[str, Any]:
+        return {"healthy": self.health_check()}
+
 
 class MCPConnector(BaseConnector):
     cli_timeout_seconds: ClassVar[int] = 30
@@ -188,6 +191,8 @@ class MCPConnector(BaseConnector):
         return redact(self.run_cli("execute_action", action))
 
     def health_check(self) -> bool:
-        response = self.run_cli("health_check")
-        return bool(response.get("healthy", False))
+        return bool(self.health_status().get("healthy", False))
+
+    def health_status(self) -> dict[str, Any]:
+        return redact(self.run_cli("health_check"))
 

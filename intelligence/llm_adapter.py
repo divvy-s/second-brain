@@ -42,12 +42,30 @@ ClientFactory = Callable[[LLMProvider, str], Any]
 
 
 class LLMAdapter:
+    DEFAULT_PROVIDERS = [
+        {
+            "provider": "gemini",
+            "base_url": "https://generativelanguage.googleapis.com/v1beta/openai/",
+            "api_key_env": "GEMINI_API_KEY",
+            "model": "gemini-2.5-flash",
+        },
+        {
+            "provider": "openrouter",
+            "base_url": "https://openrouter.ai/api/v1",
+            "api_key_env": "OPENROUTER_API_KEY",
+            "model": "openai/gpt-4.1-mini",
+        },
+    ]
+
     def __init__(self, config: dict[str, Any], client_factory: ClientFactory | None = None) -> None:
         llm_config = config.get("llm", config)
-        self.providers = [
-            LLMProvider(**llm_config["primary"]),
-            LLMProvider(**llm_config["fallback"]),
-        ]
+        providers: list[LLMProvider] = []
+        for key, fallback in zip(("primary", "fallback"), self.DEFAULT_PROVIDERS):
+            raw_provider = llm_config.get(key) if isinstance(llm_config, dict) else None
+            if not isinstance(raw_provider, dict):
+                raw_provider = fallback
+            providers.append(LLMProvider(**raw_provider))
+        self.providers = providers
         self.client_factory = client_factory
 
     def _client(self, provider: LLMProvider, api_key: str) -> Any:

@@ -59,6 +59,10 @@ class EntityExtractor:
             entities.append(Entity("DATE_REF", value, value.lower(), 0.75))
         for match in re.finditer(r"\b[A-Z][a-z]+(?:\s+[A-Z][a-z]+){0,2}\b", text):
             value = match.group(0)
+            sentence_start = match.start() == 0 or text[max(0, match.start() - 2):match.start()].endswith((". ", "! ", "? ", "\n"))
+            is_single_word = " " not in value
+            if sentence_start and is_single_word:
+                continue
             if value.lower() not in {"the", "and", "for"}:
                 entities.append(Entity("PROPER_NOUN", value, value.lower(), 0.65))
         return entities

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import uuid
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from typing import Any
 
 from connectors.base import redact, utc_now
@@ -34,23 +34,22 @@ class ApprovalStore:
     def __init__(self, database: MemoryDatabase) -> None:
         self.database = database
 
-    def _all(self) -> dict[str, dict[str, Any]]:
-        return self.database.get_setting("approval_requests", {})
-
     def save(self, request: ApprovalRequest) -> None:
-        data = self._all()
-        data[request.id] = asdict(request)
-        self.database.set_setting("approval_requests", data)
+        self.database.save_approval_request(
+            request_id=request.id,
+            action=request.action,
+            risk=request.risk,
+            status=request.status,
+            created_at=request.created_at,
+            decided_at=request.decided_at,
+        )
 
     def get(self, request_id: str) -> ApprovalRequest | None:
-        item = self._all().get(request_id)
+        item = self.database.get_approval_request(request_id)
         return ApprovalRequest(**item) if item else None
 
     def list(self, status: str | None = None) -> list[ApprovalRequest]:
-        requests = [ApprovalRequest(**item) for item in self._all().values()]
-        if status:
-            requests = [item for item in requests if item.status == status]
-        return sorted(requests, key=lambda item: item.created_at, reverse=True)
+        return [ApprovalRequest(**item) for item in self.database.list_approval_requests(status)]
 
 
 class RiskPolicy:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 from typing import Any
 
@@ -115,3 +116,40 @@ def dump_config(path: str | Path, data: dict[str, Any]) -> None:
     except ModuleNotFoundError:
         rendered = json.dumps(data, indent=2)
     config_path.write_text(rendered, encoding="utf-8")
+
+
+def update_yaml_scalar(path: str | Path, keys: list[str], value: Any) -> bool:
+    config_path = Path(path)
+    lines = config_path.read_text(encoding="utf-8").splitlines()
+    value_text = "true" if value is True else "false" if value is False else json.dumps(value)
+    key_stack: list[str] = []
+    indent_stack: list[int] = []
+    target_depth = len(keys) - 1
+    changed = False
+
+    for index, raw_line in enumerate(lines):
+        stripped = raw_line.strip()
+        if not stripped or stripped.startswith("#") or stripped.startswith("- "):
+            continue
+        indent = len(raw_line) - len(raw_line.lstrip(" "))
+        while indent_stack and indent <= indent_stack[-1]:
+            indent_stack.pop()
+            key_stack.pop()
+        match = re.match(r"^([^:#]+):(.*)$", raw_line.lstrip(" "))
+        if not match:
+            continue
+        key = match.group(1).strip()
+        key_stack.append(key)
+        indent_stack.append(indent)
+        if key_stack == keys[: len(key_stack)] and len(key_stack) == len(keys):
+            prefix = raw_line.split(":", 1)[0]
+            comment = ""
+            if "#" in match.group(2):
+                comment = "  #" + match.group(2).split("#", 1)[1].strip()
+            lines[index] = f"{' ' * indent}{prefix.strip()}: {value_text}{comment}"
+            changed = True
+            break
+
+    if changed:
+        config_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return changed

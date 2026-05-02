@@ -8,6 +8,7 @@ from execution.approval import ApprovalGate
 from execution.audit import AuditLogger
 from execution.rate_limiter import RateLimiter
 from execution.rollback import RollbackManager
+from memory.database import MemoryDatabase
 
 
 class ActionExecutor:
@@ -18,12 +19,14 @@ class ActionExecutor:
         audit_logger: AuditLogger,
         rollback: RollbackManager,
         rate_limiter: RateLimiter | None = None,
+        database: MemoryDatabase | None = None,
     ) -> None:
         self.runner = runner
         self.approval_gate = approval_gate
         self.audit_logger = audit_logger
         self.rollback = rollback
         self.rate_limiter = rate_limiter or RateLimiter()
+        self.database = database
 
     def execute(self, action: dict[str, Any]) -> dict[str, Any]:
         action_id = str(action.get("id") or uuid.uuid4())
@@ -85,6 +88,8 @@ class ActionExecutor:
             request=action,
             result=result,
         )
+        if status == "executed" and self.database is not None and action.get("source_event_id"):
+            self.database.increment_event_access(str(action["source_event_id"]), reason="execution")
         return result | {"status": status, "action_id": action_id}
 
     def execute_approved(self, request_id: str) -> dict[str, Any]:

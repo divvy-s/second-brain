@@ -37,18 +37,33 @@ class EventBus:
         self._memory_streams[stream].append((event_id, payload))
         return event_id
 
-    def read(self, last_id: str = "0-0", count: int = 100, stream_name: str | None = None) -> list[ContextEvent]:
+    def read_entries(
+        self,
+        last_id: str = "0-0",
+        count: int = 100,
+        stream_name: str | None = None,
+        block_ms: int | None = None,
+    ) -> list[tuple[str, ContextEvent]]:
         stream = stream_name or self.stream_name
         messages: list[tuple[str, dict[str, str]]]
         if self._redis is not None:
-            raw = self._redis.xread({stream: last_id}, count=count, block=0)
+            raw = self._redis.xread({stream: last_id}, count=count, block=block_ms)
             messages = []
             for _, entries in raw:
                 messages.extend(entries)
         else:
-            messages = self._memory_streams.get(stream, [])[:count]
-        events: list[ContextEvent] = []
-        for _, payload in messages:
-            events.append(ContextEvent.from_dict(json.loads(payload["event"])))
-        return events
+            messages = [entry for entry in self._memory_streams.get(stream, []) if entry[0] > last_id][:count]
+        return [
+            (message_id, ContextEvent.from_dict(json.loads(payload["event"])))
+            for message_id, payload in messages
+        ]
+
+    def read(
+        self,
+        last_id: str = "0-0",
+        count: int = 100,
+        stream_name: str | None = None,
+        block_ms: int | None = None,
+    ) -> list[ContextEvent]:
+        return [event for _, event in self.read_entries(last_id, count, stream_name, block_ms)]
 

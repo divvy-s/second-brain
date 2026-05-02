@@ -2,8 +2,7 @@ from intelligence.capture import BrainDumpCapture
 from intelligence.goal_decomposer import GoalDecomposer
 from intelligence.intent_classifier import IntentClassifier
 from intelligence.llm_adapter import LLMAdapter, LLMRequest, LLMResponse, LLMUnavailable
-from intelligence.priority import PriorityScorer
-from intelligence.rag import ContextAwareRAG
+from intelligence.priority import PriorityBreakdown, PriorityScorer
 
 __all__ = [
     "BrainDumpCapture",
@@ -14,6 +13,15 @@ __all__ = [
     "LLMRequest",
     "LLMResponse",
     "LLMUnavailable",
+    "PriorityBreakdown",
     "PriorityScorer",
 ]
+
+
+def __getattr__(name: str):
+    if name == "ContextAwareRAG":
+        from intelligence.rag import ContextAwareRAG
+
+        return ContextAwareRAG
+    raise AttributeError(name)
 

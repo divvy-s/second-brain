@@ -19,8 +19,9 @@ class ContextAwareRAG:
         self.llm = llm
 
     def answer(self, question: str, limit: int = 8) -> RAGAnswer:
-        hits = self.retriever.retrieve(question, limit=limit)
-        context = self._format_context(hits)
+        result = self.retriever.retrieve(question, limit=limit)
+        hits = result.hits
+        context = self._format_context(result)
         messages = [
             {
                 "role": "system",
@@ -40,13 +41,16 @@ class ContextAwareRAG:
             summary = " ".join(f"[{hit.event.id}] {hit.event.title}: {hit.event.body}" for hit in hits[:3])
             return RAGAnswer(summary, [hit.event.id for hit in hits], False)
 
-    def _format_context(self, hits: list[RetrievalHit]) -> str:
+    def _format_context(self, result) -> str:
         lines = []
-        for hit in hits:
+        for hit in result.hits:
             event = hit.event
             lines.append(
-                f"event_id={event.id}; score={hit.score:.3f}; source={event.source}; "
+                f"event_id={event.id}; score={hit.score:.3f}; priority={hit.priority_score:.3f}; source={event.source}; "
                 f"occurred_at={event.occurred_at.isoformat()}; title={event.title}; body={event.body}"
             )
+        structured = result.structured.to_dict()
+        if any(structured.values()):
+            lines.append(f"structured_context={structured}")
         return "\n".join(lines)
 

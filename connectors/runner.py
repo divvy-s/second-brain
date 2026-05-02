@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib
 import importlib.util
 import json
+import logging
 import shutil
 from dataclasses import dataclass
 from pathlib import Path
@@ -10,7 +11,10 @@ from types import ModuleType
 from typing import Any
 
 from connectors.base import BaseConnector, ContextEvent, MCPConnector, redact
-from connectors.config import dump_config, load_config
+from connectors.config import dump_config, load_config, update_yaml_scalar
+
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -161,7 +165,8 @@ class PluginRegistry:
     def set_plugin_enabled(self, plugin_name: str, enabled: bool) -> dict[str, Any]:
         config = load_config(self.config_path)
         config.setdefault("plugins", {}).setdefault(plugin_name, {})["enabled"] = enabled
-        dump_config(self.config_path, config)
+        if not update_yaml_scalar(self.config_path, ["plugins", plugin_name, "enabled"], enabled):
+            dump_config(self.config_path, config)
         return {"name": plugin_name, "enabled": enabled}
 
 
@@ -169,9 +174,11 @@ class ConnectorRunner:
     def __init__(self, registry: PluginRegistry | None = None) -> None:
         self.registry = registry or PluginRegistry()
         self.connectors = self.registry.load_enabled_plugins()
+        self.last_fetch_failures: dict[str, str] = {}
 
     def refresh(self) -> None:
         self.connectors = self.registry.load_enabled_plugins()
+        self.last_fetch_failures = {}
 
     def fetch_all_events(self) -> list[ContextEvent]:
         events: list[ContextEvent] = []
@@ -181,6 +188,8 @@ class ConnectorRunner:
                 events.extend(connector.fetch_events())
             except Exception as exc:
                 failures[name] = str(exc)
+                logger.warning("Connector fetch failed for %s: %s", name, exc)
+        self.last_fetch_failures = failures
         if failures and not events:
             raise RuntimeError(f"All connectors failed: {redact(failures)}")
         return events
@@ -194,12 +203,16 @@ class ConnectorRunner:
             raise KeyError(f"Connector is not enabled: {plugin_name}")
         return connector.execute_action(action)
 
-    def health(self) -> dict[str, bool]:
-        status: dict[str, bool] = {}
+    def health(self) -> dict[str, dict[str, Any]]:
+        status: dict[str, dict[str, Any]] = {}
         for name, connector in self.connectors.items():
             try:
-                status[name] = connector.health_check()
-            except Exception:
-                status[name] = False
+                details = connector.health_status()
+                details.setdefault("healthy", bool(details.get("healthy", False)))
+                if name in self.last_fetch_failures:
+                    details["last_fetch_error"] = self.last_fetch_failures[name]
+                status[name] = details
+            except Exception as exc:
+                status[name] = {"healthy": False, "error": str(exc)}
         return status
 

@@ -12,16 +12,16 @@ class RollbackManager:
     def register(self, action_id: str, undo_action: dict[str, Any] | None) -> None:
         if not undo_action:
             return
-        actions = self.database.get_setting("rollback_actions", {})
-        actions[action_id] = undo_action
-        self.database.set_setting("rollback_actions", actions)
+        self.database.save_rollback_action(action_id, undo_action, used=False)
 
     def get(self, action_id: str) -> dict[str, Any] | None:
-        return self.database.get_setting("rollback_actions", {}).get(action_id)
+        action = self.database.get_rollback_action(action_id)
+        if action and action.get("used"):
+            return None
+        if action:
+            action.pop("used", None)
+        return action
 
     def mark_used(self, action_id: str) -> None:
-        actions = self.database.get_setting("rollback_actions", {})
-        if action_id in actions:
-            actions[action_id]["used"] = True
-            self.database.set_setting("rollback_actions", actions)
+        self.database.mark_rollback_action_used(action_id)
 

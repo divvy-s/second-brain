@@ -4,6 +4,7 @@ import re
 from typing import Any
 
 from api.dependencies import AppServices
+from api.dependencies import build_workflow
 from connectors.base import ContextEvent
 
 
@@ -26,10 +27,8 @@ class TelegramApprovalBot:
                 participants=[str(message.get("from", {}).get("username") or message.get("from", {}).get("id") or "")],
                 metadata={"chat_id": message.get("chat", {}).get("id"), "update_id": update.get("update_id")},
             )
-            self.services.database.add_event(event)
-            self.services.vector_store.index_event(event)
-            self.services.event_bus.publish(event)
-            return {"status": "captured", "event": event.to_dict()}
+            stored = build_workflow(self.services).ingest({"events": [event]})["events"][0]
+            return {"status": "captured", "event": stored.to_dict()}
         voice = message.get("voice")
         if voice:
             event = ContextEvent(
@@ -40,10 +39,8 @@ class TelegramApprovalBot:
                 participants=[str(message.get("from", {}).get("username") or message.get("from", {}).get("id") or "")],
                 metadata={"voice": voice, "chat_id": message.get("chat", {}).get("id")},
             )
-            self.services.database.add_event(event)
-            self.services.vector_store.index_event(event)
-            self.services.event_bus.publish(event)
-            return {"status": "voice_captured", "event": event.to_dict()}
+            stored = build_workflow(self.services).ingest({"events": [event]})["events"][0]
+            return {"status": "voice_captured", "event": stored.to_dict()}
         return {"status": "ignored"}
 
     def _handle_text(self, text: str) -> dict[str, Any] | None:

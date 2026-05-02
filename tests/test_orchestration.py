@@ -58,8 +58,11 @@ class OrchestrationTests(unittest.TestCase):
         )
         state = workflow.run([event])
         self.assertTrue(state["prioritized"])
+        self.assertTrue(state["retrievals"])
+        self.assertTrue(state["recommendations"])
         self.assertTrue(state["actions"])
         self.assertTrue(state["results"])
+        self.assertGreaterEqual(state["prioritized"][0].score, 0.0)
 
 
 if __name__ == "__main__":

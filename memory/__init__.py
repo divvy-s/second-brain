@@ -1,4 +1,4 @@
-from memory.database import MemoryDatabase
+from memory.database import EventMemoryStats, MemoryDatabase
 from memory.decay import MemoryDecay
 from memory.event_bus import EventBus
 from memory.knowledge_graph import KnowledgeGraph
@@ -9,6 +9,7 @@ from memory.vector_store import VectorStore
 __all__ = [
     "Entity",
     "EntityExtractor",
+    "EventMemoryStats",
     "EventBus",
     "HybridRetriever",
     "KnowledgeGraph",

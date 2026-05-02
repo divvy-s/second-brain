@@ -7,7 +7,7 @@ from connectors.config import load_config
 from connectors.runner import ConnectorRunner, PluginRegistry
 from execution import ActionExecutor, ApprovalGate, ApprovalStore, AuditLogger, RateLimiter, RiskPolicy, RollbackManager
 from intelligence import BrainDumpCapture, GoalDecomposer, IntentClassifier, LLMAdapter, PriorityScorer
-from memory import EntityExtractor, EventBus, HybridRetriever, MemoryDatabase, VectorStore
+from memory import EntityExtractor, EventBus, HybridRetriever, MemoryDatabase, MemoryDecay, VectorStore
 from orchestration import BrainWorkflow
 
 
@@ -43,9 +43,10 @@ def build_services(root: Path | None = None) -> AppServices:
     event_bus = EventBus(memory_config.get("redis_url", "redis://localhost:6379/0"))
     extractor = EntityExtractor(memory_config.get("spacy_model", "en_core_web_sm"))
     scorer = PriorityScorer(config.get("priority", {}))
+    decay = MemoryDecay(float(memory_config.get("half_life_days", 30.0)))
     llm = LLMAdapter(config)
     capture = BrainDumpCapture(extractor, scorer)
-    retriever = HybridRetriever(database, vector_store)
+    retriever = HybridRetriever(database, vector_store, decay=decay, scorer=scorer, extractor=extractor)
     registry = PluginRegistry(root_dir=app_root)
     runner = ConnectorRunner(registry)
     approval_store = ApprovalStore(database)
@@ -53,8 +54,8 @@ def build_services(root: Path | None = None) -> AppServices:
     approval_gate = ApprovalGate(approval_store, RiskPolicy(user_config.get("approval_risk_threshold", "medium")))
     audit_logger = AuditLogger(database)
     rollback = RollbackManager(database)
-    executor = ActionExecutor(runner, approval_gate, audit_logger, rollback, RateLimiter())
-    classifier = IntentClassifier(llm)
+    executor = ActionExecutor(runner, approval_gate, audit_logger, rollback, RateLimiter(), database=database)
+    classifier = IntentClassifier(llm, timezone_name=str(user_config.get("timezone", "UTC")))
     return AppServices(
         root=app_root,
         config=config,
@@ -83,5 +84,8 @@ def build_workflow(services: AppServices) -> BrainWorkflow:
         scorer=services.scorer,
         decomposer=GoalDecomposer(services.llm),
         executor=services.executor,
+        retriever=services.retriever,
+        llm=services.llm,
+        event_bus=services.event_bus,
     )
 
