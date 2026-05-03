@@ -9,9 +9,18 @@ from dataclasses import asdict
 from secrets import compare_digest
 from typing import Any
 
-from fastapi import FastAPI, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
+from fastapi import BackgroundTasks, FastAPI, HTTPException, Query, Request, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, PlainTextResponse
+from fastapi.responses import JSONResponse, PlainTextResponse, Response, StreamingResponse
+
+logger = logging.getLogger(__name__)
+
+# Lazy-import voice layer — deleting voice/ won't break anything
+try:
+    from voice import VoiceService  # type: ignore[import]
+    _VOICE_AVAILABLE = True
+except ImportError:
+    _VOICE_AVAILABLE = False
 
 from api.dependencies import AppServices, build_services, build_workflow
 from api.routes.auth import router as auth_router
@@ -36,9 +45,6 @@ from api.whatsapp_webhook import extract_whatsapp_events
 from connectors.base import ContextEvent
 from execution import RateLimiter
 from intelligence.llm_adapter import LLMUnavailable
-
-
-logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -111,10 +117,10 @@ def _state_to_json(state: dict[str, Any]) -> dict[str, Any]:
 def _allowed_origins(config: dict[str, Any]) -> list[str]:
     env_origins = os.environ.get("ALLOWED_ORIGINS", "").strip()
     if env_origins:
-        return [item.strip().rstrip("/") for item in env_origins.split(",") if item.strip()]
+        return [item.strip() for item in env_origins.split(",") if item.strip()]
     config_origins = config.get("api", {}).get("allowed_origins", [])
     if isinstance(config_origins, list) and config_origins:
-        return [str(item).rstrip("/") for item in config_origins]
+        return [str(item) for item in config_origins]
     return ["http://localhost:5173", "http://127.0.0.1:5173"]
 
 
@@ -362,6 +368,26 @@ def create_app() -> FastAPI:
     # Include OAuth2 router
     app.include_router(auth_router)
 
+    # ── Voice helper ───────────────────────────────────────────────────
+    def _get_voice_service() -> Any:
+        if not _VOICE_AVAILABLE:
+            return None
+        try:
+            return VoiceService(services().config)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("VoiceService init failed: %s", exc)
+            return None
+
+    async def _bg_speak(text: str, priority_score: float, force: bool = False) -> None:
+        """Background task: generate TTS audio for high-priority events."""
+        svc = _get_voice_service()
+        if svc is None:
+            return
+        try:
+            await svc.speak(text, priority_score=priority_score, force=force)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("Background TTS failed: %s", exc)
+
     @app.exception_handler(Exception)
     async def global_exception_handler(request: Request, exc: Exception):
         logger.exception("Unhandled API error on %s", request.url.path)
@@ -525,7 +551,7 @@ def create_app() -> FastAPI:
 
     # ── Brain Dump (async for LLM calls) ──────────────────────────────
     @app.post("/brain-dump")
-    async def brain_dump(request: BrainDumpRequest, raw_request: Request) -> dict[str, Any]:
+    async def brain_dump(request: BrainDumpRequest, raw_request: Request, background_tasks: BackgroundTasks) -> dict[str, Any]:
         check_expensive_rate_limit(raw_request, "brain-dump")
         svc = services()
         _ensure_llm_ready_for_flow(svc)
@@ -566,6 +592,10 @@ def create_app() -> FastAPI:
         await ws_manager.broadcast({"type": "new_event", "payload": stored_event.to_dict()})
         for approval in pending:
             await ws_manager.broadcast({"type": "new_approval", "payload": approval})
+
+        # ── Non-blocking TTS: fires after response is sent ─────────────
+        priority_score = stored_event.importance or 0.0
+        background_tasks.add_task(_bg_speak, request.text, priority_score)
 
         return {
             "event": stored_event.to_dict(),
@@ -793,5 +823,168 @@ def create_app() -> FastAPI:
             ws_manager.disconnect(websocket)
         except Exception:
             ws_manager.disconnect(websocket)
+
+    # ── Voice Endpoints (always registered; voice package optional) ───
+    @app.post("/voice/upload")
+    async def voice_upload(file: UploadFile, background_tasks: BackgroundTasks) -> dict[str, Any]:
+        """Web UI uploads audio blob → transcribe via Whisper and Brain Dump."""
+        svc = services()
+        audio_bytes = await file.read()
+        if not audio_bytes:
+            raise HTTPException(status_code=400, detail="Empty audio file")
+
+        # Check if voice package + OPENAI_API_KEY are available
+        if not _VOICE_AVAILABLE:
+            return {"status": "no_api_key", "message": "Voice package not installed on server."}
+
+        from voice.stt import WhisperSTT  # type: ignore[import]
+        voice_cfg = svc.config.get("voice", {})
+        stt = WhisperSTT(voice_cfg)
+
+        # If API key not configured, return a specific status so frontend
+        # can gracefully fall back to browser Web Speech API
+        if not stt._is_configured:  # noqa: SLF001
+            return {
+                "status": "no_api_key",
+                "message": "OPENAI_API_KEY not set — using browser speech recognition as fallback."
+            }
+
+        transcript = await stt._whisper_transcribe(audio_bytes)  # noqa: SLF001
+        if not transcript:
+            return {
+                "status": "transcription_failed",
+                "message": "Audio processing failed; please try again or type your command."
+            }
+        event = svc.capture.capture(transcript, title="Voice upload")
+        stored_state = await build_workflow(svc).ingest({"events": [event]})
+        stored = stored_state.get("events", [None])[0]
+        if not stored:
+            raise HTTPException(status_code=500, detail="Ingestion failed after transcription")
+        background_tasks.add_task(_bg_speak, transcript, float(stored.importance or 0.0))
+        return {"status": "captured", "transcript": transcript, "event": stored.to_dict()}
+
+    @app.get("/voice/audio/{cache_key}")
+    async def voice_audio(cache_key: str) -> Response:
+        """Serve a TTS audio file from Redis cache."""
+        if not _VOICE_AVAILABLE:
+            raise HTTPException(status_code=503, detail="Voice service unavailable")
+        voice_svc = _get_voice_service()
+        if voice_svc is None:
+            raise HTTPException(status_code=503, detail="Voice service unavailable")
+        audio = await voice_svc.serve_audio(f"tts_audio:{cache_key}")
+        if audio is None:
+            raise HTTPException(status_code=404, detail="Audio not found or expired")
+        return Response(content=audio, media_type="audio/mpeg")
+
+    @app.post("/voice/morning-briefing")
+    async def morning_briefing(background_tasks: BackgroundTasks) -> dict[str, Any]:
+        """Trigger a TTS morning briefing for the top 5 agenda items."""
+        svc = services()
+        lines: list[str] = []
+        item_count = 0
+
+        # 1. Pending approvals (high priority actions)
+        try:
+            pending = svc.approval_gate.store.list("pending")
+            top_approvals = sorted(
+                pending,
+                key=lambda r: float(r.action.get("priority_score", 0.0)),
+                reverse=True,
+            )[:3]
+            for idx, r in enumerate(top_approvals):
+                title = r.action.get("title") or r.action.get("type", "Action")
+                score = float(r.action.get("priority_score", 0.0))
+                lines.append(f"{item_count + 1}. Action required: {title} — risk: {r.risk}, priority: {score:.0%}")
+                item_count += 1
+        except Exception as exc:
+            logger.warning("Morning briefing: could not load approvals: %s", exc)
+
+        # 2. Upcoming calendar events from the feed
+        try:
+            cal_events = svc.database.search_events(
+                source_filter="mcp_calendar",
+                limit=5,
+                offset=0,
+            )
+            remaining_slots = 5 - item_count
+            for event in (cal_events or [])[:remaining_slots]:
+                when = ""
+                try:
+                    from datetime import datetime
+                    dt = datetime.fromisoformat(str(event.occurred_at).replace("Z", "+00:00"))
+                    when = f" at {dt.strftime('%H:%M on %d %b')}"
+                except Exception:
+                    pass
+                lines.append(f"{item_count + 1}. Calendar: {event.title}{when}")
+                item_count += 1
+                if item_count >= 5:
+                    break
+        except Exception as exc:
+            logger.warning("Morning briefing: could not load calendar events: %s", exc)
+
+        # 3. If still under 5, pull recent important memory events
+        if item_count < 5:
+            try:
+                recent = svc.database.search_events(
+                    source_filter=None,
+                    limit=10,
+                    offset=0,
+                )
+                for event in (recent or []):
+                    if item_count >= 5:
+                        break
+                    # Skip calendar (already added) and low-importance items
+                    if getattr(event, "source", "") == "mcp_calendar":
+                        continue
+                    if getattr(event, "importance", 0.0) < 0.6:
+                        continue
+                    lines.append(f"{item_count + 1}. {event.title or event.body[:60]}")
+                    item_count += 1
+            except Exception as exc:
+                logger.warning("Morning briefing: could not load recent events: %s", exc)
+
+        # 4. If still under 5, fill with mock events from config (always available)
+        if item_count < 5:
+            try:
+                plugins_cfg = svc.config.get("plugins", {})
+                mock_sources = [
+                    ("Calendar", plugins_cfg.get("calendar", {}).get("mock_events", [])),
+                    ("Todoist", plugins_cfg.get("todoist", {}).get("mock_events", [])),
+                    ("Gmail", plugins_cfg.get("gmail", {}).get("mock_events", [])),
+                    ("Telegram", plugins_cfg.get("telegram", {}).get("mock_events", [])),
+                    ("Slack", plugins_cfg.get("slack", {}).get("mock_events", [])),
+                ]
+                for source_name, mock_list in mock_sources:
+                    if item_count >= 5:
+                        break
+                    for mock_evt in (mock_list or []):
+                        if item_count >= 5:
+                            break
+                        body = (mock_evt.get("body") or mock_evt.get("title", "")).strip()
+                        if body:
+                            lines.append(f"{item_count + 1}. {source_name}: {body[:80]}")
+                            item_count += 1
+            except Exception as exc:
+                logger.debug("Morning briefing: mock supplement failed: %s", exc)
+
+        if not lines:
+            # Absolute fallback — should never happen with mock_events configured
+            lines = [
+                "1. Check your email for any pending messages",
+                "2. Review your calendar for today's appointments",
+                "3. Look at your task list for pending to-dos",
+            ]
+            item_count = 3
+
+        briefing_text = (
+            f"Good morning! Here are your top {item_count} agenda item{'s' if item_count != 1 else ''}: "
+            + "; ".join(lines)
+        )
+        background_tasks.add_task(_bg_speak, briefing_text, 0.0, True)  # force=True
+        return {
+            "status": "briefing_queued",
+            "items": item_count,
+            "text": briefing_text,
+        }
 
     return app

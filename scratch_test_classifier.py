@@ -1,6 +1,8 @@
 import sys
+
 sys.stdout.reconfigure(encoding="utf-8")
-from api.dependencies import build_services
+
+from api.dependencies import build_services  # noqa: E402 — must come after sys.stdout.reconfigure
 
 svc = build_services()
 

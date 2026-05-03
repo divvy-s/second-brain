@@ -7,6 +7,12 @@ api:
   allowed_origins:
     - "http://localhost:5173"
     - "http://127.0.0.1:5173"
+approvals:
+  pending_max_age_hours: 168
+rate_limits:
+  enabled: true
+  expensive_capacity: 20
+  expensive_refill_per_second: 0.333
 memory:
   sqlite_path: "data/second_brain.sqlite3"
   chroma_path: "data/chroma"
@@ -22,81 +28,96 @@ priority:
     frequency: 0.10
 llm:
   primary:
-    provider: "gemini"
-    base_url: "https://generativelanguage.googleapis.com/v1beta/openai/"
-    api_key_env: "GEMINI_API_KEY"
-    model: "gemini-2.5-flash"
-  fallback:
     provider: "openrouter"
     base_url: "https://openrouter.ai/api/v1"
     api_key_env: "OPENROUTER_API_KEY"
     model: "openai/gpt-4.1-mini"
+    timeout_seconds: 30
+    max_retries: 1
+  fallback:
+    provider: "gemini"
+    base_url: "https://generativelanguage.googleapis.com/v1beta/openai/"
+    api_key_env: "GEMINI_API_KEY"
+    model: "gemini-2.5-flash"
 plugins:
   gmail:
     enabled: true
     access_token_env: "GMAIL_ACCESS_TOKEN"
+    client_id_env: "GOOGLE_CLIENT_ID"
+    client_secret_env: "GOOGLE_CLIENT_SECRET"
+    refresh_token_env: "GOOGLE_REFRESH_TOKEN"
     max_results: 10
     mock_events:
-      - id: "gmail-demo-1"
-        kind: "email"
-        title: "Quarterly planning notes"
-        body: "Asha shared the quarterly planning notes and asked for feedback by Friday."
-        participants: ["asha@example.com"]
-        importance: 0.72
+      - body: "Meeting about the new project proposal tomorrow at 10 AM."
+      - body: "Reminder: Submit the monthly report by Friday."
   slack:
     enabled: true
     bot_token_env: "SLACK_BOT_TOKEN"
+    # Slack reads only configured channels. Set IDs here or SLACK_CHANNEL_IDS in the environment.
     channel_ids: []
     mock_events:
-      - id: "slack-demo-1"
-        kind: "message"
-        title: "Launch channel update"
-        body: "Devon flagged the launch checklist as blocked on security review."
-        participants: ["devon"]
-        importance: 0.68
+      - body: "Has anyone seen the latest design docs? #design"
+      - body: "@local-user Can you check the deployment logs?"
   whatsapp:
     enabled: true
+    mock_enabled: true
+    inbound_mode: "webhook"
+    polling_enabled: false
     api_key_env: "WHATSAPP_API_KEY"
     phone_number_id_env: "WHATSAPP_PHONE_NUMBER_ID"
     recipient_id_env: "WHATSAPP_RECIPIENT_ID"
+    verify_token_env: "WHATSAPP_VERIFY_TOKEN"
     api_version: "v22.0"
     base_url: "https://graph.facebook.com"
     mock_events:
-      - id: "whatsapp-demo-1"
-        kind: "message"
-        title: "Family travel"
-        body: "Mom asked to confirm the Sunday train tickets."
-        participants: ["mom"]
-        importance: 0.58
+      - body: "URGENT: Your server is down! Check it immediately."
+      - body: "Can we schedule a call for tomorrow afternoon?"
   telegram:
     enabled: true
+    inbound_mode: "webhook"
+    polling_enabled: false
     bot_token_env: "TELEGRAM_BOT_TOKEN"
     chat_id_env: "TELEGRAM_CHAT_ID"
     webhook_secret_env: "TELEGRAM_WEBHOOK_SECRET"
     mock_events:
-      - id: "telegram-demo-1"
-        kind: "message"
-        title: "Bot approval channel"
-        body: "Approval channel is ready to receive action confirmations."
-        participants: ["second-brain-bot"]
-        importance: 0.5
+      - body: "I'll be late for the meeting, please start without me."
+      - body: "Remember to buy eggs on the way home."
   calendar:
     enabled: true
     access_token_env: "CALENDAR_ACCESS_TOKEN"
+    client_id_env: "GOOGLE_CLIENT_ID"
+    client_secret_env: "GOOGLE_CLIENT_SECRET"
+    refresh_token_env: "GOOGLE_REFRESH_TOKEN"
     mock_events:
-      - id: "calendar-demo-1"
-        kind: "event"
-        title: "Weekly Sync"
-        body: "Discuss project updates and blockers."
-        participants: ["team@example.com"]
-        importance: 0.8
+      - title: "Doctor Appointment"
+        body: "Annual checkup at the clinic."
+        occurred_at: "2026-05-04T09:00:00Z"
+      - title: "Team Lunch"
+        body: "Celebrating the successful launch."
+        occurred_at: "2026-05-05T12:30:00Z"
   todoist:
     enabled: true
     api_key_env: "TODOIST_API_KEY"
+    exclude_onboarding: true
+    exclude_project_ids: []
+    exclude_labels:
+      - "template"
+      - "onboarding"
     mock_events:
-      - id: "todoist-demo-1"
-        kind: "task"
-        title: "Review PR"
-        body: "Review the new auth implementation."
-        participants: []
-        importance: 0.6
+      - body: "Update the documentation for the API."
+      - body: "Call the bank regarding the transaction issue."
+voice:
+  enabled: true
+  # Priority score threshold above which TTS is triggered automatically.
+  # Range 0.0–1.0. Events from the boss, urgent calendar alerts, etc. typically score 0.8+.
+  tts_priority_threshold: 0.80
+  # ElevenLabs credentials (env var names)
+  elevenlabs_api_key_env: "ELEVENLABS_API_KEY"
+  elevenlabs_voice_id_env: "ELEVENLABS_VOICE_ID"
+  # Reuses your existing OPENAI_API_KEY for Whisper STT
+  whisper_api_key_env: "OPENAI_API_KEY"
+  # Redis TTL for generated audio (seconds). Audio is temporary — not stored in SQLite/ChromaDB.
+  audio_ttl_seconds: 300
+  # Circuit breaker: after 3 ElevenLabs failures, pause for this many minutes then auto-reset.
+  circuit_breaker_reset_minutes: 30
+

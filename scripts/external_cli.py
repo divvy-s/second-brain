@@ -5,12 +5,15 @@ import base64
 import email.message
 import json
 import os
+import re
+import sqlite3
 import sys
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import Any
 
 try:
@@ -56,7 +59,7 @@ def http_json(
     *,
     headers: dict[str, str] | None = None,
     payload: dict[str, Any] | None = None,
-    timeout: int = 20,
+    timeout: int = 5,
 ) -> dict[str, Any]:
     body = None
     request_headers = dict(headers or {})
@@ -75,7 +78,7 @@ def http_json(
         raise RuntimeError(f"HTTP {exc.code}: {data[:300]}") from exc
 
 
-def http_form(url: str, payload: dict[str, Any], *, timeout: int = 20) -> dict[str, Any]:
+def http_form(url: str, payload: dict[str, Any], *, timeout: int = 5) -> dict[str, Any]:
     encoded = urllib.parse.urlencode(payload).encode("utf-8")
     request = urllib.request.Request(
         url,
@@ -110,26 +113,75 @@ def normalize_mock_events(service: str, config: dict[str, Any]) -> list[dict[str
 
 
 def has_mock_events(config: dict[str, Any]) -> bool:
-    return bool(config.get("mock_events"))
+    return bool(config.get("mock_events")) or config.get("mock_enabled") is True
 
 
-def google_oauth_credentials(config: dict[str, Any]) -> dict[str, str]:
-    return {
+def normalize_string_list(value: Any) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, str):
+        if not value.strip():
+            return []
+        if value.strip().startswith("["):
+            try:
+                parsed = json.loads(value)
+                return normalize_string_list(parsed)
+            except json.JSONDecodeError:
+                pass
+        return [item.strip() for item in value.split(",") if item.strip()]
+    if isinstance(value, (list, tuple, set)):
+        return [str(item).strip() for item in value if str(item).strip()]
+    return [str(value).strip()] if str(value).strip() else []
+
+
+def _get_db_path() -> str:
+    app_root = Path(__file__).resolve().parents[1]
+    # Simple hardcoded path for the CLI, in a real app would parse config
+    return str(app_root / "data" / "second_brain.sqlite3")
+
+def google_oauth_credentials(config: dict[str, Any]) -> dict[str, Any]:
+    creds = {
         "client_id": resolve_secret(config, "client_id") or os.environ.get("GOOGLE_CLIENT_ID", ""),
         "client_secret": resolve_secret(config, "client_secret") or os.environ.get("GOOGLE_CLIENT_SECRET", ""),
+        "access_token": resolve_secret(config, "access_token"),
         "refresh_token": resolve_secret(config, "refresh_token") or os.environ.get("GOOGLE_REFRESH_TOKEN", ""),
+        "expires_at": 0,
     }
+    try:
+        with sqlite3.connect(_get_db_path()) as conn:
+            conn.row_factory = sqlite3.Row
+            row = conn.execute(
+                "SELECT access_token, refresh_token, expires_at FROM oauth_tokens WHERE provider = 'google'"
+            ).fetchone()
+            if row:
+                if row["access_token"]:
+                    creds["access_token"] = row["access_token"]
+                if row["refresh_token"]:
+                    creds["refresh_token"] = row["refresh_token"]
+                creds["expires_at"] = int(row["expires_at"] or 0)
+    except Exception:
+        pass
+    return creds
 
 
 def can_refresh_google_token(config: dict[str, Any]) -> bool:
     creds = google_oauth_credentials(config)
-    return all(creds.values())
+    return bool(creds.get("client_id") and creds.get("client_secret") and creds.get("refresh_token"))
+
+
+def google_token_is_stale(config: dict[str, Any], skew_seconds: int = 120) -> bool:
+    creds = google_oauth_credentials(config)
+    expires_at = int(creds.get("expires_at") or 0)
+    return bool(expires_at and expires_at <= int(time.time()) + skew_seconds)
 
 
 def refresh_google_access_token(config: dict[str, Any]) -> str:
     creds = google_oauth_credentials(config)
-    if not all(creds.values()):
-        return ""
+    if not can_refresh_google_token(config):
+        raise RuntimeError(
+            "Google token refresh is not configured. Set GOOGLE_CLIENT_ID, "
+            "GOOGLE_CLIENT_SECRET, and GOOGLE_REFRESH_TOKEN or reconnect with /auth/google."
+        )
     response = http_form(
         "https://oauth2.googleapis.com/token",
         {
@@ -139,7 +191,28 @@ def refresh_google_access_token(config: dict[str, Any]) -> str:
             "grant_type": "refresh_token",
         },
     )
-    return str(response.get("access_token") or "")
+    new_access_token = str(response.get("access_token") or "")
+    if not new_access_token:
+        raise RuntimeError("Google token refresh returned no access token")
+    if new_access_token:
+        # Save back to database
+        try:
+            expires_in = int(response.get("expires_in", 3600))
+            expires_at = int(time.time()) + expires_in
+            with sqlite3.connect(_get_db_path()) as conn:
+                conn.execute(
+                    """
+                    INSERT INTO oauth_tokens(provider, access_token, refresh_token, expires_at)
+                    VALUES (?, ?, ?, ?)
+                    ON CONFLICT(provider) DO UPDATE SET
+                        access_token = excluded.access_token,
+                        expires_at = excluded.expires_at
+                    """,
+                    ("google", new_access_token, creds["refresh_token"], expires_at)
+                )
+        except Exception as exc:
+            raise RuntimeError(f"Google token refreshed but could not be saved: {exc}") from exc
+    return new_access_token
 
 
 def google_http_json(
@@ -148,14 +221,18 @@ def google_http_json(
     method: str,
     url: str,
     payload: dict[str, Any] | None = None,
-    timeout: int = 20,
+    timeout: int = 5,
 ) -> dict[str, Any]:
-    token = resolve_secret(config, "access_token")
+    creds = google_oauth_credentials(config)
+    token = creds.get("access_token") or ""
     for attempt in range(2):
-        if not token and can_refresh_google_token(config):
+        if (not token or google_token_is_stale(config)) and can_refresh_google_token(config):
             token = refresh_google_access_token(config)
         if not token:
-            raise RuntimeError("No Google access token or refresh credentials are configured")
+            raise RuntimeError(
+                "Google is not connected. Set GOOGLE_REFRESH_TOKEN and GOOGLE_CLIENT_ID/"
+                "GOOGLE_CLIENT_SECRET, or complete /auth/google."
+            )
         try:
             return http_json(
                 method,
@@ -173,7 +250,8 @@ def google_http_json(
 
 
 def gmail_fetch(config: dict[str, Any]) -> dict[str, Any]:
-    token = resolve_secret(config, "access_token")
+    creds = google_oauth_credentials(config)
+    token = creds.get("access_token") or resolve_secret(config, "access_token")
     if not token and not can_refresh_google_token(config):
         return {"ok": True, "events": normalize_mock_events("gmail", config)}
     max_results = int(config.get("max_results", 10))
@@ -239,9 +317,15 @@ def gmail_action(config: dict[str, Any], action: dict[str, Any]) -> dict[str, An
 
 def slack_fetch(config: dict[str, Any]) -> dict[str, Any]:
     token = resolve_secret(config, "bot_token", "api_key")
-    channels = config.get("channel_ids") or []
-    if not token or not channels:
+    channels = normalize_string_list(config.get("channel_ids") or os.environ.get("SLACK_CHANNEL_IDS", ""))
+    if not token:
         return {"ok": True, "events": normalize_mock_events("slack", config)}
+    if not channels:
+        return {
+            "ok": True,
+            "events": normalize_mock_events("slack", config),
+            "warning": "Slack bot token is set, but no channel_ids are configured.",
+        }
     headers = {"Authorization": f"Bearer {token}"}
     events: list[dict[str, Any]] = []
     for channel_id in channels:
@@ -287,6 +371,9 @@ def slack_action(config: dict[str, Any], action: dict[str, Any]) -> dict[str, An
 
 
 def telegram_fetch(config: dict[str, Any]) -> dict[str, Any]:
+    mode = str(config.get("inbound_mode") or config.get("mode") or "webhook").lower()
+    if mode == "webhook" or config.get("polling_enabled") is False:
+        return {"ok": True, "events": [], "mode": "webhook"}
     token = resolve_secret(config, "bot_token")
     if not token:
         return {"ok": True, "events": normalize_mock_events("telegram", config)}
@@ -339,21 +426,9 @@ def telegram_action(config: dict[str, Any], action: dict[str, Any]) -> dict[str,
 
 
 def whatsapp_fetch(config: dict[str, Any]) -> dict[str, Any]:
-    base_url = str(config.get("base_url") or "").rstrip("/")
-    api_key = resolve_secret(config, "api_key")
-    if not base_url:
-        return {"ok": True, "events": normalize_mock_events("whatsapp", config)}
-    data = http_json("GET", f"{base_url}/events", headers={"Authorization": f"Bearer {api_key}"} if api_key else {})
-    events = []
-    for item in data.get("events", []):
-        event = dict(item)
-        event.setdefault("source", "mcp_whatsapp")
-        event.setdefault("kind", "message")
-        event.setdefault("occurred_at", utc_now_iso())
-        event.setdefault("participants", [])
-        event.setdefault("importance", 0.5)
-        events.append(event)
-    return {"ok": True, "events": events}
+    # WhatsApp Cloud API is webhook-only for inbound messages. Keep this fetcher
+    # side-effect free so generic sync/orchestration can never poll Meta for inbound data.
+    return {"ok": True, "events": normalize_mock_events("whatsapp", config), "mode": "webhook"}
 
 
 def whatsapp_action(config: dict[str, Any], action: dict[str, Any]) -> dict[str, Any]:
@@ -379,7 +454,8 @@ def whatsapp_action(config: dict[str, Any], action: dict[str, Any]) -> dict[str,
 
 
 def calendar_fetch(config: dict[str, Any]) -> dict[str, Any]:
-    token = resolve_secret(config, "access_token")
+    creds = google_oauth_credentials(config)
+    token = creds.get("access_token") or resolve_secret(config, "access_token")
     if not token and not can_refresh_google_token(config):
         return {"ok": True, "events": normalize_mock_events("calendar", config)}
     now = datetime.now(timezone.utc).isoformat()
@@ -438,14 +514,44 @@ def calendar_action(config: dict[str, Any], action: dict[str, Any]) -> dict[str,
     return {"ok": True, "result": {"event_id": data.get("id"), "link": data.get("htmlLink"), "status": "created"}}
 
 
+TODOIST_ONBOARDING_PATTERNS = (
+    r"\bwelcome to todoist\b",
+    r"\btodoist tour\b",
+    r"\btry todoist\b",
+    r"\bdownload todoist\b",
+    r"\badd your first task\b",
+    r"\bcreate your first project\b",
+    r"\btemplate task\b",
+)
+
+
+def is_todoist_onboarding_task(item: dict[str, Any], config: dict[str, Any]) -> bool:
+    project_id = str(item.get("project_id") or item.get("projectId") or "")
+    labels = {str(label).lower() for label in (item.get("labels") or [])}
+    excluded_projects = set(normalize_string_list(config.get("exclude_project_ids")))
+    excluded_labels = {label.lower() for label in normalize_string_list(config.get("exclude_labels"))}
+    if project_id and project_id in excluded_projects:
+        return True
+    if labels & excluded_labels:
+        return True
+    if config.get("exclude_onboarding", True) is False:
+        return False
+    title = str(item.get("content") or item.get("title") or "")
+    description = str(item.get("description") or "")
+    haystack = f"{title}\n{description}".lower()
+    return any(re.search(pattern, haystack) for pattern in TODOIST_ONBOARDING_PATTERNS)
+
+
 def todoist_fetch(config: dict[str, Any]) -> dict[str, Any]:
     token = resolve_secret(config, "api_key")
     if not token:
         return {"ok": True, "events": normalize_mock_events("todoist", config)}
     data = http_json("GET", "https://api.todoist.com/api/v1/tasks", headers={"Authorization": f"Bearer {token}"})
     events: list[dict[str, Any]] = []
-    items = data if isinstance(data, list) else data.get("items", [])
+    items = data if isinstance(data, list) else data.get("results", [])
     for item in items:
+        if is_todoist_onboarding_task(item, config):
+            continue
         events.append(
             {
                 "id": f"todoist-{item.get('id')}",
@@ -456,7 +562,12 @@ def todoist_fetch(config: dict[str, Any]) -> dict[str, Any]:
                 "occurred_at": item.get("created_at", utc_now_iso()),
                 "participants": [],
                 "importance": 0.6,
-                "metadata": {"task_id": item.get("id"), "url": item.get("url")},
+                "metadata": {
+                    "task_id": item.get("id"),
+                    "url": item.get("url"),
+                    "project_id": item.get("project_id"),
+                    "labels": item.get("labels") or [],
+                },
             }
         )
     return {"ok": True, "events": events}
@@ -476,9 +587,16 @@ def todoist_action(config: dict[str, Any], action: dict[str, Any]) -> dict[str, 
 def health(service: str, config: dict[str, Any]) -> dict[str, Any]:
     mock_enabled = has_mock_events(config)
     if service in {"gmail", "calendar"}:
-        live_configured = bool(resolve_secret(config, "access_token")) or can_refresh_google_token(config)
+        creds = google_oauth_credentials(config)
+        token = creds.get("access_token") or resolve_secret(config, "access_token")
+        live_configured = bool(token) or can_refresh_google_token(config)
         if not live_configured:
-            return {"ok": True, "healthy": False, "mode": "mock" if mock_enabled else "unconfigured", "mock_enabled": mock_enabled}
+            return {
+                "ok": True,
+                "healthy": mock_enabled,
+                "mode": "mock" if mock_enabled else "unconfigured",
+                "mock_enabled": mock_enabled,
+            }
         try:
             url = (
                 "https://gmail.googleapis.com/gmail/v1/users/me/profile"
@@ -491,8 +609,22 @@ def health(service: str, config: dict[str, Any]) -> dict[str, Any]:
             return {"ok": True, "healthy": False, "mode": "error", "mock_enabled": mock_enabled, "error": str(exc)}
     if service == "slack":
         token = resolve_secret(config, "bot_token", "api_key")
+        channels = normalize_string_list(config.get("channel_ids") or os.environ.get("SLACK_CHANNEL_IDS", ""))
         if not token:
-            return {"ok": True, "healthy": False, "mode": "mock" if mock_enabled else "unconfigured", "mock_enabled": mock_enabled}
+            return {
+                "ok": True,
+                "healthy": mock_enabled,
+                "mode": "mock" if mock_enabled else "unconfigured",
+                "mock_enabled": mock_enabled,
+            }
+        if not channels:
+            return {
+                "ok": True,
+                "healthy": False,
+                "mode": "unconfigured",
+                "mock_enabled": mock_enabled,
+                "error": "Set plugins.slack.channel_ids or SLACK_CHANNEL_IDS to fetch Slack messages.",
+            }
         try:
             data = http_json("GET", "https://slack.com/api/auth.test", headers={"Authorization": f"Bearer {token}"})
             if not data.get("ok"):
@@ -501,9 +633,17 @@ def health(service: str, config: dict[str, Any]) -> dict[str, Any]:
         except Exception as exc:
             return {"ok": True, "healthy": False, "mode": "error", "mock_enabled": mock_enabled, "error": str(exc)}
     if service == "telegram":
+        mode = str(config.get("inbound_mode") or config.get("mode") or "webhook").lower()
         token = resolve_secret(config, "bot_token")
         if not token:
-            return {"ok": True, "healthy": False, "mode": "mock" if mock_enabled else "unconfigured", "mock_enabled": mock_enabled}
+            return {
+                "ok": True,
+                "healthy": mock_enabled,
+                "mode": "mock" if mock_enabled else "unconfigured",
+                "mock_enabled": mock_enabled,
+            }
+        if mode == "webhook" or config.get("polling_enabled") is False:
+            return {"ok": True, "healthy": True, "mode": "webhook", "mock_enabled": mock_enabled}
         try:
             data = http_json("GET", f"https://api.telegram.org/bot{token}/getMe")
             if not data.get("ok"):
@@ -515,7 +655,12 @@ def health(service: str, config: dict[str, Any]) -> dict[str, Any]:
         api_key = resolve_secret(config, "api_key")
         phone_id = resolve_secret(config, "phone_number_id")
         if not api_key or not phone_id:
-            return {"ok": True, "healthy": False, "mode": "mock" if mock_enabled else "unconfigured", "mock_enabled": mock_enabled}
+            return {
+                "ok": True,
+                "healthy": mock_enabled,
+                "mode": "mock" if mock_enabled else "unconfigured",
+                "mock_enabled": mock_enabled,
+            }
         try:
             api_version = str(config.get("api_version") or os.environ.get("WHATSAPP_API_VERSION", "v22.0"))
             http_json("GET", f"https://graph.facebook.com/{api_version}/{phone_id}", headers={"Authorization": f"Bearer {api_key}"})
@@ -525,7 +670,12 @@ def health(service: str, config: dict[str, Any]) -> dict[str, Any]:
     if service == "todoist":
         token = resolve_secret(config, "api_key")
         if not token:
-            return {"ok": True, "healthy": False, "mode": "mock" if mock_enabled else "unconfigured", "mock_enabled": mock_enabled}
+            return {
+                "ok": True,
+                "healthy": mock_enabled,
+                "mode": "mock" if mock_enabled else "unconfigured",
+                "mock_enabled": mock_enabled,
+            }
         try:
             http_json("GET", "https://api.todoist.com/api/v1/tasks?limit=1", headers={"Authorization": f"Bearer {token}"})
             return {"ok": True, "healthy": True, "mode": "live", "mock_enabled": mock_enabled}

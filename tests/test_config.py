@@ -12,9 +12,18 @@ class ConfigTests(unittest.TestCase):
         config = load_config(root / "config" / "user_config.yml")
         self.assertIn("plugins", config)
         self.assertTrue(config["plugins"]["gmail"]["enabled"])
-        self.assertEqual(config["plugins"]["gmail"]["mock_events"][0]["id"], "gmail-demo-1")
-        self.assertEqual(config["plugins"]["gmail"]["mock_events"][0]["participants"], ["asha@example.com"])
+        self.assertEqual(config["plugins"]["gmail"]["access_token_env"], "GMAIL_ACCESS_TOKEN")
+        self.assertEqual(config["plugins"]["gmail"]["refresh_token_env"], "GOOGLE_REFRESH_TOKEN")
+        self.assertEqual(config["plugins"]["gmail"]["max_results"], 10)
         self.assertEqual(config["plugins"]["slack"]["channel_ids"], [])
+        self.assertEqual(config["plugins"]["telegram"]["inbound_mode"], "webhook")
+        self.assertFalse(config["plugins"]["telegram"]["polling_enabled"])
+        self.assertEqual(config["plugins"]["whatsapp"]["verify_token_env"], "WHATSAPP_VERIFY_TOKEN")
+        self.assertEqual(config["llm"]["primary"]["provider"], "gemini")
+        self.assertEqual(config["llm"]["primary"]["api_key_env"], "GEMINI_API_KEY")
+        self.assertEqual(config["llm"]["primary"]["model"], "gemini-2.5-flash")
+        self.assertEqual(config["llm"]["primary"]["max_retries"], 1)
+        self.assertEqual(config["approvals"]["pending_max_age_hours"], 168)
 
 
 if __name__ == "__main__":

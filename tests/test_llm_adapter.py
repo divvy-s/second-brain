@@ -1,82 +1,66 @@
 from __future__ import annotations
 
-import os
+import asyncio
 import unittest
+from unittest.mock import patch
 
-from intelligence.llm_adapter import LLMAdapter, LLMProvider, LLMRequest
-
-
-class FakeMessage:
-    content = "fallback answer"
+from intelligence.llm_adapter import LLMAdapter, LLMRequest, LLMUnavailable, MockAsyncOpenAI
 
 
-class FakeChoice:
-    message = FakeMessage()
-
-
-class FakeResponse:
-    choices = [FakeChoice()]
-
-
-class FakeCompletions:
-    def __init__(self, provider: LLMProvider) -> None:
-        self.provider = provider
-
-    def create(self, **_: object) -> FakeResponse:
-        if self.provider.provider == "xai":
-            raise RuntimeError("rate limit")
-        return FakeResponse()
-
-
-class FakeChat:
-    def __init__(self, provider: LLMProvider) -> None:
-        self.completions = FakeCompletions(provider)
-
-
-class FakeClient:
-    def __init__(self, provider: LLMProvider) -> None:
-        self.chat = FakeChat(provider)
+def llm_config(provider: str = "gemini", api_key_env: str = "GEMINI_API_KEY") -> dict:
+    return {
+        "llm": {
+            "primary": {
+                "provider": provider,
+                "base_url": "https://generativelanguage.googleapis.com/v1beta/openai/",
+                "api_key_env": api_key_env,
+                "model": "gemini-2.5-flash",
+                "timeout_seconds": 2,
+                "max_retries": 1,
+            }
+        }
+    }
 
 
 class LLMAdapterTests(unittest.TestCase):
-    def test_falls_back_from_grok_to_openrouter(self) -> None:
-        config = {
-            "llm": {
-                "primary": {
-                    "provider": "xai",
-                    "base_url": "https://api.x.ai/v1",
-                    "api_key_env": "XAI_API_KEY",
-                    "model": "grok-4",
-                },
-                "fallback": {
-                    "provider": "openrouter",
-                    "base_url": "https://openrouter.ai/api/v1",
-                    "api_key_env": "OPENROUTER_API_KEY",
-                    "model": "openai/gpt-4.1-mini",
-                },
-            }
-        }
-        old_xai = os.environ.get("XAI_API_KEY")
-        old_router = os.environ.get("OPENROUTER_API_KEY")
-        os.environ["XAI_API_KEY"] = "xai-test"
-        os.environ["OPENROUTER_API_KEY"] = "router-test"
-        try:
-            adapter = LLMAdapter(config, client_factory=lambda provider, _: FakeClient(provider))
-            response = adapter.complete(LLMRequest(messages=[{"role": "user", "content": "hello"}]))
-            self.assertTrue(response.fallback_used)
-            self.assertEqual(response.provider, "openrouter")
-            self.assertEqual(response.content, "fallback answer")
-        finally:
-            if old_xai is None:
-                os.environ.pop("XAI_API_KEY", None)
-            else:
-                os.environ["XAI_API_KEY"] = old_xai
-            if old_router is None:
-                os.environ.pop("OPENROUTER_API_KEY", None)
-            else:
-                os.environ["OPENROUTER_API_KEY"] = old_router
+    def test_llm_adapter_reads_provider_config_from_env(self) -> None:
+        with patch.dict("os.environ", {"GEMINI_API_KEY": "test-key"}, clear=False):
+            adapter = LLMAdapter(llm_config(), client_factory=MockAsyncOpenAI)
+        self.assertTrue(adapter.is_configured())
+        self.assertEqual(adapter.provider, "gemini")
+        self.assertEqual(adapter.model, "gemini-2.5-flash")
+        self.assertEqual(adapter.api_key_env, "GEMINI_API_KEY")
+        self.assertTrue(adapter.status().base_url_configured)
+
+    def test_openai_provider_defaults_are_supported(self) -> None:
+        config = {"llm": {"primary": {"provider": "openai", "api_key_env": "OPENAI_API_KEY", "model": "gpt-4o-mini"}}}
+        with patch.dict("os.environ", {"OPENAI_API_KEY": "openai-key"}, clear=False):
+            adapter = LLMAdapter(config, client_factory=MockAsyncOpenAI)
+        self.assertTrue(adapter.is_configured())
+        self.assertEqual(adapter.status().provider, "openai")
+
+    def test_invalid_provider_configuration_is_reported(self) -> None:
+        adapter = LLMAdapter(llm_config(provider="unknown-ai"), client_factory=MockAsyncOpenAI)
+        self.assertFalse(adapter.is_configured())
+        self.assertEqual(adapter.status().error_code, "invalid_provider")
+        with self.assertRaisesRegex(LLMUnavailable, "Unsupported LLM provider"):
+            adapter.ensure_available()
+
+    def test_missing_api_key_names_required_env_var(self) -> None:
+        with patch.dict("os.environ", {}, clear=True):
+            adapter = LLMAdapter(llm_config(api_key_env="GEMINI_API_KEY"), client_factory=MockAsyncOpenAI)
+        self.assertFalse(adapter.is_configured())
+        self.assertEqual(adapter.status().error_code, "missing_api_key")
+        self.assertIn("GEMINI_API_KEY", adapter.status().message)
+
+    def test_llm_adapter_complete(self) -> None:
+        with patch.dict("os.environ", {"GEMINI_API_KEY": "test-key"}, clear=False):
+            adapter = LLMAdapter(llm_config(), client_factory=MockAsyncOpenAI)
+        response = asyncio.run(adapter.complete(LLMRequest(messages=[{"role": "user", "content": "hello"}])))
+        self.assertEqual(response.content, "mocked response")
+        self.assertEqual(response.metadata["model"], "gemini-2.5-flash")
+        self.assertEqual(response.metadata["provider"], "gemini")
 
 
 if __name__ == "__main__":
     unittest.main()
-

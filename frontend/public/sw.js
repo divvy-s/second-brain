@@ -1,6 +1,6 @@
 self.addEventListener("install", (event) => {
   event.waitUntil(
-    caches.open("second-brain-v1").then((cache) => cache.addAll(["/", "/manifest.webmanifest", "/icon.svg"]))
+    caches.open("second-brain-v2").then((cache) => cache.addAll(["/", "/manifest.webmanifest", "/icon.svg", "/favicon.svg"]))
   );
 });
 

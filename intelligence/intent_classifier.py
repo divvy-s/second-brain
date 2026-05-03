@@ -76,14 +76,16 @@ class IntentClassifier:
         self.llm = llm
         self.timezone_name = timezone_name
 
-    def classify(self, text: str) -> list[ClassifiedIntent]:
+    async def classify(self, text: str) -> list[ClassifiedIntent]:
         """Classify the user's text into a structured intent."""
         # Try LLM first
         if self.llm.is_configured():
             try:
-                return self._llm_classify(text)
+                return await self._llm_classify(text)
+            except LLMUnavailable:
+                if self.llm.requires_configuration():
+                    raise
             except Exception:
-                # Log or handle error if needed, falling back to rules
                 pass
 
         # Fall back to rules — with support for simple splitting
@@ -96,7 +98,7 @@ class IntentClassifier:
         
         return results if results else [self._rule_classify(text)]
 
-    def _llm_classify(self, text: str) -> list[ClassifiedIntent]:
+    async def _llm_classify(self, text: str) -> list[ClassifiedIntent]:
         """Use the LLM to classify intent."""
         try:
             local_tz = ZoneInfo(self.timezone_name)
@@ -109,7 +111,7 @@ class IntentClassifier:
             },
             {"role": "user", "content": text},
         ]
-        response = self.llm.complete(LLMRequest(
+        response = await self.llm.complete(LLMRequest(
             messages=messages,
             temperature=0.05,
             max_tokens=500,

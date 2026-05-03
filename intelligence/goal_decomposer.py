@@ -20,7 +20,7 @@ class GoalDecomposer:
     def __init__(self, llm: LLMAdapter) -> None:
         self.llm = llm
 
-    def decompose(self, goal: str, context: str = "") -> list[GoalStep]:
+    async def decompose(self, goal: str, context: str = "") -> list[GoalStep]:
         messages = [
             {
                 "role": "system",
@@ -33,9 +33,13 @@ class GoalDecomposer:
             {"role": "user", "content": f"Goal:\n{goal}\n\nContext:\n{context}"},
         ]
         try:
-            response = self.llm.complete(LLMRequest(messages=messages, temperature=0.1, max_tokens=1200))
+            response = await self.llm.complete(LLMRequest(messages=messages, temperature=0.1, max_tokens=1200))
             return self._parse_steps(response.content)
-        except (LLMUnavailable, json.JSONDecodeError, KeyError, TypeError, ValueError):
+        except LLMUnavailable:
+            if self.llm.requires_configuration():
+                raise
+            return self._rule_based(goal)
+        except (json.JSONDecodeError, KeyError, TypeError, ValueError):
             return self._rule_based(goal)
 
     def _parse_steps(self, raw: str) -> list[GoalStep]:

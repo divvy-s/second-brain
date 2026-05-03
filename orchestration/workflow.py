@@ -78,10 +78,14 @@ class BrainWorkflow:
         except Exception:
             return None
 
-    def run(self, events: list[ContextEvent] | None = None) -> BrainState:
+    async def run(self, events: list[ContextEvent] | None = None) -> BrainState:
         state: BrainState = {"events": events} if events is not None else {}
         if self._compiled_graph is not None:
-            return self._compiled_graph.invoke(state)
+            # Note: LangGraph has an ainvoke method for async execution
+            if hasattr(self._compiled_graph, "ainvoke"):
+                return await self._compiled_graph.ainvoke(state)
+            else:
+                return self._compiled_graph.invoke(state)
         for step in (
             self.ingest,
             self.prioritize,
@@ -90,10 +94,17 @@ class BrainWorkflow:
             self.route,
             self.approval_execute,
         ):
-            state = {**state, **step(state)}
+            res = await step(state)
+            state.update(res)
         return state
 
-    def ingest(self, state: BrainState) -> BrainState:
+    async def ingest(self, state: BrainState) -> BrainState:
+        return await self._ingest_impl(state, use_llm_summaries=True)
+
+    async def ingest_lightweight(self, state: BrainState) -> BrainState:
+        return await self._ingest_impl(state, use_llm_summaries=False)
+
+    async def _ingest_impl(self, state: BrainState, *, use_llm_summaries: bool) -> BrainState:
         events = state.get("events")
         if events is None:
             raw_events = self.runner.fetch_all_events()
@@ -108,7 +119,11 @@ class BrainWorkflow:
         for event in events:
             if not event.entities:
                 event.entities = [entity.to_dict() for entity in self.extractor.extract(f"{event.title}\n{event.body}")]
-            semantic_summary = self._semantic_summary(event)
+            semantic_summary = (
+                await self._semantic_summary(event)
+                if use_llm_summaries
+                else self._fallback_summary(event)
+            )
             event.metadata["semantic_summary"] = semantic_summary
             if self.event_bus is not None:
                 self.event_bus.publish(event)
@@ -118,11 +133,11 @@ class BrainWorkflow:
             enriched.append(stored)
         return {"events": enriched}
 
-    def prioritize(self, state: BrainState) -> BrainState:
+    async def prioritize(self, state: BrainState) -> BrainState:
         ranked = self.retriever.rank_events()
         return {"prioritized": ranked}
 
-    def retrieve_context(self, state: BrainState) -> BrainState:
+    async def retrieve_context(self, state: BrainState) -> BrainState:
         retrievals: list[dict[str, Any]] = []
         top_ranked = state.get("prioritized", [])[:8]
         for hit in top_ranked:
@@ -138,7 +153,7 @@ class BrainWorkflow:
             )
         return {"retrievals": retrievals}
 
-    def plan(self, state: BrainState) -> BrainState:
+    async def plan(self, state: BrainState) -> BrainState:
         plans: list[dict[str, Any]] = []
         recommendations: list[dict[str, Any]] = []
         for hit in state.get("prioritized", []):
@@ -150,7 +165,7 @@ class BrainWorkflow:
             recommendations.append(recommendation)
             if hit.score < 0.6:
                 continue
-            steps = self.decomposer.decompose(
+            steps = await self.decomposer.decompose(
                 f"Decide what to do about this event: {hit.event.title}\n{hit.event.body}",
                 context=self._planning_context(hit, context_bundle, recommendation),
             )
@@ -166,7 +181,8 @@ class BrainWorkflow:
         recommendations.sort(key=lambda item: float(item["score"]), reverse=True)
         return {"recommendations": recommendations, "plans": plans}
 
-    def route(self, state: BrainState) -> BrainState:
+    async def route(self, state: BrainState) -> BrainState:
+        import asyncio
         existing_requests = self.executor.approval_gate.store.list()
         handled_event_ids = {
             str(request.action.get("source_event_id"))
@@ -178,6 +194,15 @@ class BrainWorkflow:
         recommendation_lookup = {item["event_id"]: item for item in state.get("recommendations", [])}
 
         actions: list[dict[str, Any]] = []
+        
+        async def evaluate_agents(hit, context):
+            # Run agents concurrently
+            decisions = await asyncio.gather(*(
+                asyncio.to_thread(agent.handle, hit.event, context)
+                for agent in self.agents if agent.can_handle(hit.event)
+            ))
+            return decisions
+
         for hit in state.get("prioritized", []):
             if hit.score < 0.5 or hit.event.id in handled_event_ids:
                 continue
@@ -187,16 +212,15 @@ class BrainWorkflow:
                 "score": hit.score,
                 "priority_score": hit.priority_score,
             }
-            for agent in self.agents:
-                if agent.can_handle(hit.event):
-                    decision = agent.handle(hit.event, context)
-                    for action in decision.actions:
-                        action.setdefault("risk", "medium")
-                        action.setdefault("source_event_id", hit.event.id)
-                        action["effective_score"] = hit.score
-                        action["priority_score"] = hit.priority_score
-                        action["recommendation_type"] = context["recommendation"].get("category", "review")
-                        actions.append(action)
+            decisions = await evaluate_agents(hit, context)
+            for decision in decisions:
+                for action in decision.actions:
+                    action.setdefault("risk", "medium")
+                    action.setdefault("source_event_id", hit.event.id)
+                    action["effective_score"] = hit.score
+                    action["priority_score"] = hit.priority_score
+                    action["recommendation_type"] = context["recommendation"].get("category", "review")
+                    actions.append(action)
 
         for event_id, plan in plan_lookup.items():
             if event_id in handled_event_ids:
@@ -223,7 +247,7 @@ class BrainWorkflow:
                 deduped.append(action)
         return {"actions": deduped}
 
-    def approval_execute(self, state: BrainState) -> BrainState:
+    async def approval_execute(self, state: BrainState) -> BrainState:
         store = self.executor.approval_gate.store
         existing_keys: set[tuple[str, str, str]] = {
             (
@@ -252,7 +276,7 @@ class BrainWorkflow:
             results.append(result | {"effective_score": action.get("effective_score", 0.0)})
         return {"results": results}
 
-    def _semantic_summary(self, event: ContextEvent) -> str:
+    async def _semantic_summary(self, event: ContextEvent) -> str:
         if self.llm is not None and self.llm.is_configured():
             messages = [
                 {
@@ -265,7 +289,7 @@ class BrainWorkflow:
                 {"role": "user", "content": f"Title: {event.title}\nBody: {event.body}"},
             ]
             try:
-                response = self.llm.complete(LLMRequest(messages=messages, temperature=0.1, max_tokens=140))
+                response = await self.llm.complete(LLMRequest(messages=messages, temperature=0.1, max_tokens=140))
                 summary = response.content.strip()
                 if summary:
                     return summary
@@ -273,6 +297,9 @@ class BrainWorkflow:
                 pass
             except Exception:
                 pass
+        return self._fallback_summary(event)
+
+    def _fallback_summary(self, event: ContextEvent) -> str:
         raw = f"{event.title}. {event.body}".strip()
         raw = " ".join(raw.split())
         return raw[:280]

@@ -15,6 +15,8 @@ export type ContextEvent = {
   occurred_at: string;
   importance: number;
   participants: string[];
+  metadata?: Record<string, unknown>;
+  semantic_summary?: string;
 };
 
 export type ApprovalRequest = {
@@ -25,25 +27,130 @@ export type ApprovalRequest = {
   action: Record<string, unknown>;
 };
 
+export type HealthData = {
+  ok: boolean;
+  plugins: Record<string, { ok: boolean; healthy: boolean; mode: string; error?: string; mock_enabled?: boolean; last_fetch_error?: string }>;
+  plugin_failures: Record<string, string>;
+  redis_backed: boolean;
+  llm_configured: boolean;
+  llm_status?: {
+    configured: boolean;
+    provider: string;
+    model: string;
+    base_url_configured: boolean;
+    api_key_env: string;
+    error_code?: string | null;
+    message: string;
+  };
+  api_auth_configured: boolean;
+  environment?: string;
+  auth_bypass_active?: boolean;
+  chroma_ready?: boolean;
+  telegram_webhook?: {
+    mode: string;
+    secret_configured: boolean;
+    secret_source: string;
+    polling_enabled: boolean;
+    safe_for_webhook: boolean;
+  };
+};
+
+export type FeedResponse = {
+  events: ContextEvent[];
+  total: number;
+  limit: number;
+  offset: number;
+  has_more: boolean;
+  next_offset: number;
+};
+
+export type TasksResponse = {
+  tasks: Array<{ id: string; title: string; body: string; occurred_at: string; importance: number; metadata: Record<string, unknown> }>;
+  source: string;
+  connected: boolean;
+  error?: string;
+  message?: string;
+};
+
+export type ScheduleResponse = {
+  events: Array<{ id: string; title: string; body: string; occurred_at: string; participants: string[]; importance: number; metadata: Record<string, unknown> }>;
+  source: string;
+  connected: boolean;
+  error?: string;
+  message?: string;
+};
+
+export type BrainDumpResponse = {
+  event: ContextEvent;
+  intents: Array<{ type: string; plugin?: string; confidence?: number; fields?: Record<string, unknown> }>;
+  approvals: ApprovalRequest[];
+};
+
 const API_BASE = import.meta.env.VITE_API_BASE ?? "http://127.0.0.1:8000";
+const API_KEY = import.meta.env.VITE_API_KEY ?? "";
+
+async function friendlyError(response: Response): Promise<string> {
+  const fallback = response.status === 401
+    ? (API_KEY ? "The API or provider rejected the configured credentials." : "Frontend auth key missing. Set VITE_API_KEY to match the backend SECRET_KEY.")
+    : response.status === 403
+      ? "The API key was rejected."
+      : response.status === 503
+        ? "A required service (LLM or integration) is not configured. Check your API keys in .env."
+      : response.status === 429
+        ? "Too many requests. Please wait a moment and try again."
+        : response.status >= 500
+          ? "The server hit an error. Please try again."
+          : "Request failed.";
+  try {
+    const payload = await response.json();
+    const detail = typeof payload?.detail === "string" ? payload.detail : "";
+    if (!detail) return fallback;
+    if (detail.includes("{") || detail.includes("Traceback") || detail.length > 300) return fallback;
+    return detail;
+  } catch {
+    return fallback;
+  }
+}
+
 
 async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+    ...(options.headers as Record<string, string> ?? {})
+  };
+  // Attach auth header when API key is configured (production mode)
+  if (API_KEY) {
+    headers["Authorization"] = `Bearer ${API_KEY}`;
+  }
   const response = await fetch(`${API_BASE}${path}`, {
     ...options,
-    headers: {
-      "Content-Type": "application/json",
-      ...(options.headers ?? {})
-    }
+    headers
   });
   if (!response.ok) {
-    throw new Error(await response.text());
+    throw new Error(await friendlyError(response));
   }
   return response.json() as Promise<T>;
 }
 
+export type VoiceUploadResponse = {
+  status: string;
+  transcript?: string;
+  message?: string;
+  event?: ContextEvent;
+};
+
+export type MorningBriefingResponse = {
+  status: string;
+  items?: number;
+  text?: string;
+};
+
 export const api = {
-  health: () => request<Record<string, unknown>>("/health"),
+  health: () => request<HealthData>("/health"),
   plugins: () => request<{ plugins: Plugin[] }>("/plugins/list"),
+  feed: (limit = 30, offset = 0, source = "all") => request<FeedResponse>(`/events/feed?limit=${limit}&offset=${offset}&source=${encodeURIComponent(source)}`),
+  tasks: () => request<TasksResponse>("/tasks/pending"),
+  schedule: () => request<ScheduleResponse>("/schedule/upcoming"),
   enablePlugin: (name: string) => request<{ name: string; enabled: boolean }>("/plugins/enable", {
     method: "POST",
     body: JSON.stringify({ name })
@@ -52,15 +159,19 @@ export const api = {
     method: "POST",
     body: JSON.stringify({ name })
   }),
-  brainDump: (text: string) => request<{ event: ContextEvent }>("/brain-dump", {
+  brainDump: (text: string) => request<BrainDumpResponse>("/brain-dump", {
     method: "POST",
     body: JSON.stringify({ text })
   }),
-  retrieve: (query: string) => request<{ hits: Array<{ event: ContextEvent; score: number }> }>("/events/retrieve", {
+  retrieve: (query: string) => request<{ hits: Array<{ event: ContextEvent; score: number }>; search_mode: string; chroma_ready: boolean }>("/events/retrieve", {
     method: "POST",
     body: JSON.stringify({ query, limit: 8 })
   }),
   orchestrate: () => request<Record<string, unknown>>("/orchestrate", {
+    method: "POST",
+    body: JSON.stringify({})
+  }),
+  sync: () => request<{ ok: boolean; synced: number; events: ContextEvent[]; connector_errors: Record<string, string> }>("/events/sync", {
     method: "POST",
     body: JSON.stringify({})
   }),
@@ -72,6 +183,23 @@ export const api = {
   reject: (request_id: string) => request<Record<string, unknown>>("/approvals/reject", {
     method: "POST",
     body: JSON.stringify({ request_id })
-  })
-};
+  }),
 
+  // ── Voice Layer ────────────────────────────────────────────────
+  voiceUpload: async (audioBlob: Blob): Promise<VoiceUploadResponse> => {
+    const form = new FormData();
+    form.append("file", audioBlob, "voice.webm");
+    const headers: Record<string, string> = {};
+    if (API_KEY) headers["Authorization"] = `Bearer ${API_KEY}`;
+    const response = await fetch(`${API_BASE}/voice/upload`, {
+      method: "POST",
+      headers,
+      body: form,
+    });
+    if (!response.ok) throw new Error(await friendlyError(response));
+    return response.json();
+  },
+
+  morningBriefing: (): Promise<MorningBriefingResponse> =>
+    request<MorningBriefingResponse>("/voice/morning-briefing", { method: "POST" }),
+};

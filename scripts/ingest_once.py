@@ -4,15 +4,15 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-from pathlib import Path
+from pathlib import Path  # noqa: E402 — must follow load_dotenv() so env vars are set before module init
 
-from connectors.config import load_config
-from connectors.runner import ConnectorRunner, PluginRegistry
-from memory.database import MemoryDatabase
-from memory.event_bus import EventBus
-from memory.knowledge_graph import KnowledgeGraph
-from memory.ner import EntityExtractor
-from memory.vector_store import VectorStore
+from connectors.config import load_config  # noqa: E402
+from connectors.runner import ConnectorRunner, PluginRegistry  # noqa: E402
+from memory.database import MemoryDatabase  # noqa: E402
+from memory.event_bus import EventBus  # noqa: E402
+from memory.knowledge_graph import KnowledgeGraph  # noqa: E402
+from memory.ner import EntityExtractor  # noqa: E402
+from memory.vector_store import VectorStore  # noqa: E402
 
 
 def main() -> int:

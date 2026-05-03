@@ -5,7 +5,7 @@ import math
 import re
 import sqlite3
 from dataclasses import dataclass
-from datetime import timezone
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -219,6 +219,13 @@ class MemoryDatabase:
                     key TEXT PRIMARY KEY,
                     value_json TEXT NOT NULL,
                     updated_at TEXT NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS oauth_tokens (
+                    provider TEXT PRIMARY KEY,
+                    access_token TEXT NOT NULL,
+                    refresh_token TEXT NOT NULL DEFAULT '',
+                    expires_at INTEGER NOT NULL DEFAULT 0
                 );
 
                 """
@@ -595,6 +602,28 @@ class MemoryDatabase:
             rows = conn.execute(sql, params).fetchall()
         return [self._row_to_event(row) for row in rows]
 
+    def feed_events(
+        self,
+        *,
+        limit: int = 30,
+        offset: int = 0,
+        source: str | None = None,
+    ) -> tuple[list[ContextEvent], int]:
+        limit = max(1, min(int(limit), 100))
+        offset = max(0, int(offset))
+        where = ""
+        params: list[Any] = []
+        if source:
+            where = " WHERE source = ?"
+            params.append(source)
+        with self.connect() as conn:
+            total = int(conn.execute(f"SELECT COUNT(*) FROM context_events{where}", tuple(params)).fetchone()[0])
+            rows = conn.execute(
+                f"SELECT * FROM context_events{where} ORDER BY occurred_at DESC LIMIT ? OFFSET ?",
+                tuple(params + [limit, offset]),
+            ).fetchall()
+        return [self._row_to_event(row) for row in rows], total
+
     def recent_events(self, limit: int = 50) -> list[ContextEvent]:
         return self.all_events(limit=limit)
 
@@ -615,22 +644,38 @@ class MemoryDatabase:
         if not terms:
             return []
         fts_query = " OR ".join(terms)
+        rows: list[sqlite3.Row] = []
         with self.connect() as conn:
-            rows = conn.execute(
-                """
-                SELECT context_events.*, bm25(context_events_fts) AS rank
-                FROM context_events_fts
-                JOIN context_events ON context_events.id = context_events_fts.event_id
-                WHERE context_events_fts MATCH ?
-                ORDER BY rank
-                LIMIT ?
-                """,
-                (fts_query, limit),
-            ).fetchall()
+            try:
+                rows = conn.execute(
+                    """
+                    SELECT context_events.*, bm25(context_events_fts) AS rank
+                    FROM context_events_fts
+                    JOIN context_events ON context_events.id = context_events_fts.event_id
+                    WHERE context_events_fts MATCH ?
+                    ORDER BY rank
+                    LIMIT ?
+                    """,
+                    (fts_query, limit),
+                ).fetchall()
+            except sqlite3.OperationalError:
+                rows = []
+            if not rows:
+                like = f"%{' '.join(terms)}%"
+                rows = conn.execute(
+                    """
+                    SELECT *, -1.0 AS rank
+                    FROM context_events
+                    WHERE title LIKE ? OR body LIKE ? OR semantic_summary LIKE ?
+                    ORDER BY occurred_at DESC
+                    LIMIT ?
+                    """,
+                    (like, like, like, limit),
+                ).fetchall()
         hits: list[tuple[ContextEvent, float]] = []
         for row in rows:
             rank = float(row["rank"])
-            score = 1.0 / (1.0 + max(0.0, rank + 10.0))
+            score = 0.35 if rank < 0 else 1.0 / (1.0 + max(0.0, rank + 10.0))
             hits.append((self._row_to_event(row), score))
         return hits
 
@@ -1202,6 +1247,23 @@ class MemoryDatabase:
             }
             for row in rows
         ]
+
+    def expire_pending_approval_requests(self, *, older_than_seconds: int) -> int:
+        cutoff = utc_now().timestamp() - max(0, int(older_than_seconds))
+        cutoff_iso = datetime.fromtimestamp(cutoff, timezone.utc).isoformat()
+        now = utc_now().isoformat()
+        with self.connect() as conn:
+            cursor = conn.execute(
+                """
+                UPDATE approval_requests
+                SET status = 'expired',
+                    decided_at = ?
+                WHERE status = 'pending'
+                  AND created_at < ?
+                """,
+                (now, cutoff_iso),
+            )
+            return int(cursor.rowcount or 0)
 
     def save_rollback_action(self, action_id: str, undo_action: dict[str, Any], used: bool = False) -> None:
         now = utc_now().isoformat()

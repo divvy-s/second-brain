@@ -18,7 +18,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # Set working directory
 WORKDIR /app
 
-# Copy the rest of the application code first so pyproject.toml can find the packages
+# Copy the full application code first so pyproject.toml can find all packages
 COPY . .
 
 # Install python dependencies

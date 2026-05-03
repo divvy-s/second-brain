@@ -25,6 +25,6 @@ filtered_path = [
 sys.path[:] = [str(ROOT), *filtered_path]
 
 # Preload the repo-local packages so pytest cannot satisfy imports from stale build outputs.
-import execution.executor  # noqa: F401
-import memory.database  # noqa: F401
-import orchestration.workflow  # noqa: F401
+import execution.executor  # noqa: E402, F401 — intentionally after sys.path rewrite; imported for side-effects
+import memory.database  # noqa: E402, F401
+import orchestration.workflow  # noqa: E402, F401
