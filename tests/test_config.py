@@ -19,6 +19,10 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(config["plugins"]["telegram"]["inbound_mode"], "webhook")
         self.assertFalse(config["plugins"]["telegram"]["polling_enabled"])
         self.assertEqual(config["plugins"]["whatsapp"]["verify_token_env"], "WHATSAPP_VERIFY_TOKEN")
+        self.assertEqual(config["llm"]["primary"]["provider"], "gemini")
+        self.assertEqual(config["llm"]["primary"]["api_key_env"], "GEMINI_API_KEY")
+        self.assertEqual(config["llm"]["primary"]["model"], "gemini-2.5-flash")
+        self.assertEqual(config["llm"]["primary"]["max_retries"], 1)
         self.assertEqual(config["approvals"]["pending_max_age_hours"], 168)
 
 

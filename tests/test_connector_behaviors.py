@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import unittest
+import time
 from unittest.mock import patch
 
 from connectors.base import BaseConnector, ContextEvent
@@ -38,6 +39,12 @@ class PollingConnector(BaseConnector):
         return True
 
 
+class SlowHealthConnector(PollingConnector):
+    def health_status(self) -> dict[str, object]:
+        time.sleep(1.5)
+        return {"healthy": True, "mode": "live"}
+
+
 class ConnectorBehaviorTests(unittest.TestCase):
     def test_runner_skips_webhook_only_connectors(self) -> None:
         webhook = PollingConnector(config={"inbound_mode": "webhook"})
@@ -57,6 +64,15 @@ class ConnectorBehaviorTests(unittest.TestCase):
         runner.last_fetch_failures = {}
         self.assertEqual(runner.fetch_all_events(), [])
         self.assertFalse(telegram.called)
+
+    def test_runner_health_is_bounded_for_slow_connectors(self) -> None:
+        runner = ConnectorRunner.__new__(ConnectorRunner)
+        runner.connectors = {"slow": SlowHealthConnector(config={})}
+        runner.last_fetch_failures = {}
+        started = time.monotonic()
+        status = runner.health(timeout_seconds=0.1)
+        self.assertLess(time.monotonic() - started, 1.0)
+        self.assertEqual(status["slow"]["mode"], "timeout")
 
     def test_telegram_and_whatsapp_fetch_are_webhook_safe(self) -> None:
         def fail_http(*args, **kwargs):

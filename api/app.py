@@ -35,6 +35,7 @@ from api.webhook_security import (
 from api.whatsapp_webhook import extract_whatsapp_events
 from connectors.base import ContextEvent
 from execution import RateLimiter
+from intelligence.llm_adapter import LLMUnavailable
 
 
 logger = logging.getLogger(__name__)
@@ -201,6 +202,59 @@ def _rate_limit_key(request: Request, endpoint: str) -> str:
     return f"{endpoint}:{client_host}"
 
 
+def _llm_http_exception(exc: LLMUnavailable) -> HTTPException:
+    status = 503
+    if exc.code == "authentication_failed":
+        status = 401
+    elif exc.code == "provider_timeout":
+        status = 504
+    elif exc.code == "rate_limited":
+        status = 429
+    return HTTPException(status_code=status, detail=exc.message)
+
+
+def _ensure_llm_ready_for_flow(services_obj: AppServices) -> None:
+    # If an LLM provider is explicitly configured, user-facing reasoning flows should
+    # report misconfiguration instead of silently falling back forever.
+    if services_obj.llm.requires_configuration() and not services_obj.llm.is_configured():
+        try:
+            services_obj.llm.ensure_available()
+        except LLMUnavailable as exc:
+            raise _llm_http_exception(exc) from exc
+
+
+def _startup_validation_errors(services_obj: AppServices) -> list[str]:
+    errors: list[str] = []
+    env = _environment()
+    production = env == "production"
+
+    token = _api_token(services_obj.config)
+    token_env = str(services_obj.config.get("api", {}).get("auth_token_env", "SECRET_KEY"))
+    if production:
+        if not token:
+            errors.append(f"{token_env} is required in production for API authentication.")
+        elif len(token) < 32:
+            errors.append(f"{token_env} must be at least 32 characters in production.")
+
+    llm_error = services_obj.llm.configuration_error
+    if llm_error is not None:
+        fatal_codes = {"invalid_provider", "missing_base_url", "missing_model", "sdk_missing"}
+        if production or llm_error.code in fatal_codes:
+            errors.append(llm_error.message)
+
+    telegram_config = services_obj.config.get("plugins", {}).get("telegram", {})
+    if telegram_webhook_mode(services_obj.config) == "webhook" and telegram_config.get("polling_enabled") is True:
+        errors.append("Telegram polling cannot be enabled while inbound_mode is webhook.")
+
+    return errors
+
+
+def _validate_startup_config(services_obj: AppServices) -> None:
+    errors = _startup_validation_errors(services_obj)
+    if errors:
+        raise RuntimeError("Startup configuration error: " + " ".join(errors))
+
+
 # ---------------------------------------------------------------------------
 # ChromaDB readiness flag — set after background initialization completes
 # ---------------------------------------------------------------------------
@@ -217,6 +271,7 @@ def create_app() -> FastAPI:
         services_obj.config,
         environment=_environment(),
     )
+    _validate_startup_config(services_obj)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -286,6 +341,11 @@ def create_app() -> FastAPI:
             logger.info("Generated a development Telegram webhook secret. View setup details at /telegram/webhook/setup.")
         elif not telegram_secret_state.configured:
             logger.warning("TELEGRAM_WEBHOOK_SECRET is not configured; Telegram webhook requests will be rejected.")
+        logger.info(
+            "Telegram webhook setup format: "
+            "https://api.telegram.org/bot<TOKEN>/setWebhook?url=https://<your-ngrok-host>/telegram/webhook"
+            "&secret_token=<TELEGRAM_WEBHOOK_SECRET>"
+        )
         asyncio.create_task(init_chroma())
         asyncio.create_task(poll_connectors())
         yield
@@ -360,6 +420,7 @@ def create_app() -> FastAPI:
             "plugin_failures": svc.runner.last_fetch_failures,
             "redis_backed": svc.event_bus.is_redis_backed,
             "llm_configured": svc.llm.is_configured(),
+            "llm_status": svc.llm.status().to_dict(),
             "api_auth_configured": bool(_api_token(svc.config)),
             "environment": _environment(),
             "auth_bypass_active": bool(not _api_token(svc.config) and _is_development()),
@@ -467,6 +528,7 @@ def create_app() -> FastAPI:
     async def brain_dump(request: BrainDumpRequest, raw_request: Request) -> dict[str, Any]:
         check_expensive_rate_limit(raw_request, "brain-dump")
         svc = services()
+        _ensure_llm_ready_for_flow(svc)
         workflow = build_workflow(svc)
 
         event = svc.capture.capture(request.text, title=request.title)
@@ -476,7 +538,10 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=500, detail="Brain dump ingestion produced no stored events")
         stored_event = stored_events[0]
 
-        intents = await svc.classifier.classify(request.text)
+        try:
+            intents = await svc.classifier.classify(request.text)
+        except LLMUnavailable as exc:
+            raise _llm_http_exception(exc) from exc
         intent_responses = []
         for intent in intents:
             action = svc.classifier.to_action(intent, source_event_id=stored_event.id)
@@ -513,9 +578,13 @@ def create_app() -> FastAPI:
     async def orchestrate(raw_request: Request, request: OrchestrateRequest | None = None) -> dict[str, Any]:
         check_expensive_rate_limit(raw_request, "orchestrate")
         svc = services()
+        _ensure_llm_ready_for_flow(svc)
         events = [ContextEvent.from_dict(item) for item in request.events] if request and request.events else None
         workflow = build_workflow(svc)
-        state = await workflow.run(events)
+        try:
+            state = await workflow.run(events)
+        except LLMUnavailable as exc:
+            raise _llm_http_exception(exc) from exc
         return _state_to_json(state)
 
     # ── Action Execution ───────────────────────────────────────────────

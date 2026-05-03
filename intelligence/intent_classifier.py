@@ -16,7 +16,7 @@ from datetime import datetime, timezone
 from typing import Any
 from zoneinfo import ZoneInfo
 
-from intelligence.llm_adapter import LLMAdapter, LLMRequest
+from intelligence.llm_adapter import LLMAdapter, LLMRequest, LLMUnavailable
 
 
 @dataclass(frozen=True)
@@ -82,8 +82,10 @@ class IntentClassifier:
         if self.llm.is_configured():
             try:
                 return await self._llm_classify(text)
+            except LLMUnavailable:
+                if self.llm.requires_configuration():
+                    raise
             except Exception:
-                # Log or handle error if needed, falling back to rules
                 pass
 
         # Fall back to rules — with support for simple splitting

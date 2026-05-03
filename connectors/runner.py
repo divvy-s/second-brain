@@ -5,6 +5,7 @@ import importlib.util
 import json
 import logging
 import shutil
+from concurrent.futures import ThreadPoolExecutor, TimeoutError, as_completed
 from dataclasses import dataclass
 from pathlib import Path
 from types import ModuleType
@@ -217,16 +218,44 @@ class ConnectorRunner:
             raise KeyError(f"Connector is not enabled: {plugin_name}")
         return connector.execute_action(action)
 
-    def health(self) -> dict[str, dict[str, Any]]:
+    def health(self, *, timeout_seconds: int = 4) -> dict[str, dict[str, Any]]:
         status: dict[str, dict[str, Any]] = {}
-        for name, connector in self.connectors.items():
+        if not self.connectors:
+            return status
+
+        def check(name: str, connector: BaseConnector) -> tuple[str, dict[str, Any]]:
             try:
-                details = connector.health_status()
+                if isinstance(connector, MCPConnector):
+                    details = connector.health_status(timeout_seconds=timeout_seconds)
+                else:
+                    details = connector.health_status()
                 details.setdefault("healthy", bool(details.get("healthy", False)))
                 if name in self.last_fetch_failures:
                     details["last_fetch_error"] = self.last_fetch_failures[name]
-                status[name] = details
+                return name, details
             except Exception as exc:
-                status[name] = {"healthy": False, "error": str(exc)}
+                return name, {"healthy": False, "mode": "error", "error": str(exc)}
+
+        executor = ThreadPoolExecutor(max_workers=min(8, len(self.connectors)))
+        futures = {
+            executor.submit(check, name, connector): name
+            for name, connector in self.connectors.items()
+        }
+        try:
+            for future in as_completed(futures, timeout=max(0.1, float(timeout_seconds) + 0.25)):
+                name, details = future.result()
+                status[name] = details
+        except TimeoutError:
+            pass
+        finally:
+            for future, name in futures.items():
+                if name not in status:
+                    future.cancel()
+                    status[name] = {
+                        "healthy": False,
+                        "mode": "timeout",
+                        "error": f"Health check timed out after {timeout_seconds} seconds.",
+                    }
+            executor.shutdown(wait=False, cancel_futures=True)
         return status
 

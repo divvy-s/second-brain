@@ -33,6 +33,15 @@ export type HealthData = {
   plugin_failures: Record<string, string>;
   redis_backed: boolean;
   llm_configured: boolean;
+  llm_status?: {
+    configured: boolean;
+    provider: string;
+    model: string;
+    base_url_configured: boolean;
+    api_key_env: string;
+    error_code?: string | null;
+    message: string;
+  };
   api_auth_configured: boolean;
   environment?: string;
   auth_bypass_active?: boolean;
@@ -82,9 +91,11 @@ const API_KEY = import.meta.env.VITE_API_KEY ?? "";
 
 async function friendlyError(response: Response): Promise<string> {
   const fallback = response.status === 401
-    ? "You are not signed in to the API."
+    ? (API_KEY ? "The API or provider rejected the configured credentials." : "Frontend auth key missing. Set VITE_API_KEY to match the backend SECRET_KEY.")
     : response.status === 403
       ? "The API key was rejected."
+      : response.status === 503
+        ? "A required service (LLM or integration) is not configured. Check your API keys in .env."
       : response.status === 429
         ? "Too many requests. Please wait a moment and try again."
         : response.status >= 500
@@ -94,12 +105,13 @@ async function friendlyError(response: Response): Promise<string> {
     const payload = await response.json();
     const detail = typeof payload?.detail === "string" ? payload.detail : "";
     if (!detail) return fallback;
-    if (detail.includes("{") || detail.includes("Traceback") || detail.length > 180) return fallback;
+    if (detail.includes("{") || detail.includes("Traceback") || detail.length > 300) return fallback;
     return detail;
   } catch {
     return fallback;
   }
 }
+
 
 async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
   const headers: Record<string, string> = {

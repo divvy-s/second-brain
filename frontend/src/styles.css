@@ -821,6 +821,20 @@ button, textarea, input, select {
   flex-shrink: 0;
 }
 
+.notice.llm-warning {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  background: rgba(244, 63, 94, 0.1);
+  border: 1px solid rgba(244, 63, 94, 0.28);
+  color: var(--text-primary);
+}
+
+.notice.llm-warning svg {
+  color: var(--accent-rose);
+  flex-shrink: 0;
+}
+
 /* ============================================================
    Sync Band
    ============================================================ */

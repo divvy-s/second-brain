@@ -148,7 +148,13 @@ class MCPConnector(BaseConnector):
             metadata=metadata or {},
         )
 
-    def run_cli(self, operation: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
+    def run_cli(
+        self,
+        operation: str,
+        payload: dict[str, Any] | None = None,
+        *,
+        timeout_seconds: int | None = None,
+    ) -> dict[str, Any]:
         cli = self.root_dir / "scripts" / "external_cli.py"
         request = {
             "config": self.config,
@@ -160,7 +166,7 @@ class MCPConnector(BaseConnector):
             text=True,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
-            timeout=self.cli_timeout_seconds,
+            timeout=timeout_seconds or self.cli_timeout_seconds,
             check=False,
         )
         if completed.returncode != 0:
@@ -193,6 +199,6 @@ class MCPConnector(BaseConnector):
     def health_check(self) -> bool:
         return bool(self.health_status().get("healthy", False))
 
-    def health_status(self) -> dict[str, Any]:
-        return redact(self.run_cli("health_check"))
+    def health_status(self, timeout_seconds: int | None = None) -> dict[str, Any]:
+        return redact(self.run_cli("health_check", timeout_seconds=timeout_seconds))
 

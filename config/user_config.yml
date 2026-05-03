@@ -28,15 +28,17 @@ priority:
     frequency: 0.10
 llm:
   primary:
+    provider: "openrouter"
+    base_url: "https://openrouter.ai/api/v1"
+    api_key_env: "OPENROUTER_API_KEY"
+    model: "openrouter/free"
+    timeout_seconds: 30
+    max_retries: 1
+  fallback:
     provider: "gemini"
     base_url: "https://generativelanguage.googleapis.com/v1beta/openai/"
     api_key_env: "GEMINI_API_KEY"
     model: "gemini-2.5-flash"
-  fallback:
-    provider: "openrouter"
-    base_url: "https://openrouter.ai/api/v1"
-    api_key_env: "OPENROUTER_API_KEY"
-    model: "openai/gpt-4.1-mini"
 plugins:
   gmail:
     enabled: true

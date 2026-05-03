@@ -15,7 +15,7 @@ The project is highly modular, split into distinct domain boundaries to ensure s
 | **`data/`** | Local storage directory (e.g., SQLite databases, entity models). |
 | **`execution/`** | The action-taking engine and risk-aware approval gate. |
 | **`frontend/`** | Web UI for interacting with your Second Brain. |
-| **`intelligence/`** | LLM adapters (`xAI Grok`, `OpenRouter` fallback) and routing logic. |
+| **`intelligence/`** | OpenAI-compatible LLM adapter, intent parsing, ranking, and routing logic. |
 | **`memory/`** | Hybrid memory system for ingesting, storing, and retrieving past context. |
 | **`orchestration/`** | Event bus and workflow routing (optionally backed by Redis). |
 | **`scripts/`** | Utility scripts for database initialization, ingestion, and running the server. |
@@ -34,7 +34,7 @@ The project is highly modular, split into distinct domain boundaries to ensure s
 
 ### Quick Start
 1. **Environment Variables**:
-   Copy `.env.example` to `.env` and fill in your API keys (e.g., `XAI_API_KEY`):
+   Copy `.env.example` to `.env` and fill in your API keys (for the default config, `GEMINI_API_KEY`):
    ```bash
    cp .env.example .env
    ```
@@ -58,9 +58,9 @@ The API runs on `http://127.0.0.1:8000` and the frontend usually on `http://loca
 
 ## 🛡️ Security Model
 
-External integrations are loaded as plugins and reach provider APIs through `scripts.external_cli`. Credentials are referenced through environment variables or local config and are never passed into LLM prompts. All LLM calls go through `intelligence.llm_adapter.LLMAdapter`, with xAI Grok as the primary OpenAI-compatible provider and OpenRouter as fallback.
+External integrations are loaded as plugins and reach provider APIs through `scripts.external_cli`. Credentials are referenced through environment variables or local config and are never passed into LLM prompts. All LLM calls go through `intelligence.llm_adapter.LLMAdapter`, which reads `llm.primary.provider`, `base_url`, `api_key_env`, and `model` from `config/user_config.yml`. The default provider is Gemini through its OpenAI-compatible endpoint; OpenAI can be used by setting `provider: "openai"`, `base_url: "https://api.openai.com/v1"`, `api_key_env: "OPENAI_API_KEY"`, and an OpenAI model such as `gpt-4o-mini`.
 
-Set `ENVIRONMENT=development` for local auth bypass while `SECRET_KEY` is empty. In production, leave `ENVIRONMENT=production` and set a strong random `SECRET_KEY`; the frontend must use the same value as `VITE_API_KEY` so protected API calls send `Authorization: Bearer ...`.
+Set `ENVIRONMENT=development` for local auth bypass while `SECRET_KEY` is empty. In production, leave `ENVIRONMENT=production` and set a strong random `SECRET_KEY`; startup now fails clearly if it is missing or too short. The frontend must use the same value as `VITE_API_KEY` so protected API calls send `Authorization: Bearer ...`.
 
 Expensive endpoints such as `/brain-dump` and `/orchestrate` are rate-limited with configurable values in `config/user_config.yml`.
 

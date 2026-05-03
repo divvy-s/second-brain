@@ -6,12 +6,14 @@ import email.message
 import json
 import os
 import re
+import sqlite3
 import sys
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import Any
 
 try:
@@ -57,7 +59,7 @@ def http_json(
     *,
     headers: dict[str, str] | None = None,
     payload: dict[str, Any] | None = None,
-    timeout: int = 20,
+    timeout: int = 5,
 ) -> dict[str, Any]:
     body = None
     request_headers = dict(headers or {})
@@ -76,7 +78,7 @@ def http_json(
         raise RuntimeError(f"HTTP {exc.code}: {data[:300]}") from exc
 
 
-def http_form(url: str, payload: dict[str, Any], *, timeout: int = 20) -> dict[str, Any]:
+def http_form(url: str, payload: dict[str, Any], *, timeout: int = 5) -> dict[str, Any]:
     encoded = urllib.parse.urlencode(payload).encode("utf-8")
     request = urllib.request.Request(
         url,
@@ -131,9 +133,6 @@ def normalize_string_list(value: Any) -> list[str]:
         return [str(item).strip() for item in value if str(item).strip()]
     return [str(value).strip()] if str(value).strip() else []
 
-
-import sqlite3
-from pathlib import Path
 
 def _get_db_path() -> str:
     app_root = Path(__file__).resolve().parents[1]
@@ -222,7 +221,7 @@ def google_http_json(
     method: str,
     url: str,
     payload: dict[str, Any] | None = None,
-    timeout: int = 20,
+    timeout: int = 5,
 ) -> dict[str, Any]:
     creds = google_oauth_credentials(config)
     token = creds.get("access_token") or ""

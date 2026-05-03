@@ -154,6 +154,10 @@ export function App() {
       .map((name) => ({ name, status: health.plugins[name] }))
       .filter(({ status }) => status && !status.healthy && status.mode !== "mock");
   }, [health, visibleConnectors]);
+  const llmStatus = health?.llm_status;
+  const llmUnavailable = Boolean(
+    llmStatus && !llmStatus.configured && llmStatus.error_code && llmStatus.error_code !== "not_configured"
+  );
 
   const filteredFeed = useMemo(() => {
     if (feedFilter === "all") return feedEvents;
@@ -465,6 +469,15 @@ export function App() {
           </div>
         </div>
       )}
+      {llmUnavailable && (
+        <div className="notice llm-warning">
+          <AlertTriangle size={16} />
+          <div>
+            <strong>LLM unavailable.</strong>
+            <span> {llmStatus?.message || "Check the configured provider and API key."}</span>
+          </div>
+        </div>
+      )}
 
       <ActionCenter
         isOpen={isActionCenterOpen}
@@ -508,7 +521,11 @@ export function App() {
             <div className="status-row">
               <span className="status-label">LLM</span>
               <span className={`status-value ${health?.llm_configured ? "good" : "bad"}`}>
-                {health?.llm_configured ? "Active" : "Missing"}
+                {health?.llm_configured
+                  ? `${llmStatus?.provider || "Provider"} / ${llmStatus?.model || "model"}`
+                  : llmStatus?.api_key_env
+                    ? `Set ${llmStatus.api_key_env}`
+                    : "Unavailable"}
               </span>
             </div>
             <div className="status-row">
