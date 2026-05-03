@@ -132,6 +132,19 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
   return response.json() as Promise<T>;
 }
 
+export type VoiceUploadResponse = {
+  status: string;
+  transcript?: string;
+  message?: string;
+  event?: ContextEvent;
+};
+
+export type MorningBriefingResponse = {
+  status: string;
+  items?: number;
+  text?: string;
+};
+
 export const api = {
   health: () => request<HealthData>("/health"),
   plugins: () => request<{ plugins: Plugin[] }>("/plugins/list"),
@@ -170,5 +183,23 @@ export const api = {
   reject: (request_id: string) => request<Record<string, unknown>>("/approvals/reject", {
     method: "POST",
     body: JSON.stringify({ request_id })
-  })
+  }),
+
+  // ── Voice Layer ────────────────────────────────────────────────
+  voiceUpload: async (audioBlob: Blob): Promise<VoiceUploadResponse> => {
+    const form = new FormData();
+    form.append("file", audioBlob, "voice.webm");
+    const headers: Record<string, string> = {};
+    if (API_KEY) headers["Authorization"] = `Bearer ${API_KEY}`;
+    const response = await fetch(`${API_BASE}/voice/upload`, {
+      method: "POST",
+      headers,
+      body: form,
+    });
+    if (!response.ok) throw new Error(await friendlyError(response));
+    return response.json();
+  },
+
+  morningBriefing: (): Promise<MorningBriefingResponse> =>
+    request<MorningBriefingResponse>("/voice/morning-briefing", { method: "POST" }),
 };

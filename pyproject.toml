@@ -40,7 +40,9 @@ packages = [
   "agents",
   "execution",
   "api",
-  "second_brain_sdk"
+  "second_brain_sdk",
+  "voice",
+  "workers"
 ]
 
 [tool.ruff]

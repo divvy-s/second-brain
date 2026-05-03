@@ -7,6 +7,7 @@ import {
   Check,
   CircleOff,
   Loader2,
+  Mic,
   RefreshCw,
   Search,
   Send,
@@ -18,6 +19,7 @@ import {
 import { ApprovalRequest, ContextEvent, HealthData, Plugin, ScheduleResponse, TasksResponse, api } from "./api";
 import { ActionCenter } from "./components/ActionCenter";
 import { AgendaMenu } from "./components/AgendaMenu";
+import { VoiceCapture } from "./components/VoiceCapture";
 import { useWebSocket } from "./hooks/useWebSocket";
 import { useNotifications } from "./hooks/useNotifications";
 import { useToast } from "./context/ToastContext";
@@ -579,6 +581,9 @@ export function App() {
                 <div className="panel-icon capture"><Send size={16} /></div>
                 <span className="panel-title">Capture</span>
               </div>
+              <div className="panel-header-right">
+                <span className="voice-badge"><Mic size={12} /> Voice</span>
+              </div>
             </div>
             <textarea
               className="capture-textarea"
@@ -586,6 +591,11 @@ export function App() {
               onChange={(e) => setCaptureText(e.target.value)}
               onKeyDown={(e) => { if (e.key === "Enter" && e.ctrlKey) capture(); }}
               placeholder="Type a task, message, reminder, or note... (Ctrl+Enter to send)"
+            />
+            {/* Voice Controls */}
+            <VoiceCapture
+              onTranscript={(text) => setCaptureText((prev) => prev ? prev + "\n" + text : text)}
+              onToast={(title, body, type) => pushToast({ title, body, type: (type === "urgent" ? "warning" : type) ?? "info" })}
             />
             <div className="capture-actions">
               <span className="capture-hint">Generated actions appear in Approvals for review.</span>
