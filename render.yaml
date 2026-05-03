@@ -1,0 +1,33 @@
+services:
+  - type: web
+    name: second-brain-api
+    env: python
+    buildCommand: "pip install . && python -m spacy download en_core_web_sm && mkdir -p data && python -m scripts.init_db"
+    startCommand: "uvicorn api.app:create_app --host 0.0.0.0 --port $PORT"
+    # Note: Deployed without a persistent disk to allow free-tier usage without a credit card.
+    # SQLite and ChromaDB data will be wiped out on every deploy or server sleep.
+    envVars:
+      - key: ALLOWED_ORIGINS
+        sync: false # Set this to your Vercel URL later (e.g. https://your-app.vercel.app)
+      - key: SECRET_KEY
+        generateValue: true
+      - key: REDIS_URL
+        sync: false # Set to your Redis instance URL if using Redis, or leave blank if local only
+      # LLM Keys
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: OPENROUTER_API_KEY
+        sync: false
+      # Plugin API Keys
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false
+      - key: TELEGRAM_WEBHOOK_SECRET
+        generateValue: true
+      - key: WHATSAPP_API_KEY
+        sync: false
+      - key: SLACK_BOT_TOKEN
+        sync: false
+      - key: GMAIL_ACCESS_TOKEN
+        sync: false
+      - key: TODOIST_API_KEY
+        sync: false
