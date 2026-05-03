@@ -4,12 +4,8 @@ services:
     env: python
     buildCommand: "pip install . && python -m spacy download en_core_web_sm && mkdir -p data && python -m scripts.init_db"
     startCommand: "uvicorn api.app:create_app --host 0.0.0.0 --port $PORT"
-    # A persistent disk is required because Render's file system is ephemeral. 
-    # Without this, the SQLite database and ChromaDB vector store will be deleted every deploy.
-    disk:
-      name: data
-      mountPath: /opt/render/project/src/data
-      sizeGB: 1
+    # Note: Deployed without a persistent disk to allow free-tier usage without a credit card.
+    # SQLite and ChromaDB data will be wiped out on every deploy or server sleep.
     envVars:
       - key: ALLOWED_ORIGINS
         sync: false # Set this to your Vercel URL later (e.g. https://your-app.vercel.app)
