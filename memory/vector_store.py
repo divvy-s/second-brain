@@ -56,6 +56,10 @@ class VectorStore:
         """Initialize ChromaDB connection asynchronously."""
         await asyncio.to_thread(self.initialize)
 
+    @property
+    def ready(self) -> bool:
+        return self._collection is not None and self._ready.is_set()
+
     def _load_local_items(self) -> dict[str, dict[str, Any]]:
         if not self._local_path.exists():
             return {}

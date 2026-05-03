@@ -1,15 +1,19 @@
 from __future__ import annotations
 
+import logging
 import re
 from dataclasses import dataclass
 from typing import Any, Iterable
 
 from connectors.base import ContextEvent
-from intelligence.priority import PriorityBreakdown, PriorityScorer
+from intelligence.priority import PriorityScorer
 from memory.database import EventMemoryStats, MemoryDatabase
 from memory.decay import MemoryDecay
 from memory.ner import Entity, EntityExtractor
 from memory.vector_store import VectorStore
+
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -79,10 +83,16 @@ class HybridRetriever:
 
     def retrieve(self, query: str, limit: int = 10) -> HybridRetrievalResult:
         structured = self._structured_context(query)
-        vector_hits = {
-            hit["event_id"]: hit
-            for hit in self.vector_store.query(query, max(limit * 4, 12))
-        }
+        if not getattr(self.vector_store, "ready", False):
+            logger.info("Vector search is not ready; using SQLite keyword fallback for memory search.")
+        try:
+            vector_hits = {
+                hit["event_id"]: hit
+                for hit in self.vector_store.query(query, max(limit * 4, 12))
+            }
+        except Exception as exc:
+            logger.warning("Vector search failed; using SQLite keyword fallback: %s", exc)
+            vector_hits = {}
         keyword_hits = {
             event.id: score
             for event, score in self.database.search_keyword(query, max(limit * 4, 12))

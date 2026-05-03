@@ -13,8 +13,13 @@ class ConfigTests(unittest.TestCase):
         self.assertIn("plugins", config)
         self.assertTrue(config["plugins"]["gmail"]["enabled"])
         self.assertEqual(config["plugins"]["gmail"]["access_token_env"], "GMAIL_ACCESS_TOKEN")
+        self.assertEqual(config["plugins"]["gmail"]["refresh_token_env"], "GOOGLE_REFRESH_TOKEN")
         self.assertEqual(config["plugins"]["gmail"]["max_results"], 10)
         self.assertEqual(config["plugins"]["slack"]["channel_ids"], [])
+        self.assertEqual(config["plugins"]["telegram"]["inbound_mode"], "webhook")
+        self.assertFalse(config["plugins"]["telegram"]["polling_enabled"])
+        self.assertEqual(config["plugins"]["whatsapp"]["verify_token_env"], "WHATSAPP_VERIFY_TOKEN")
+        self.assertEqual(config["approvals"]["pending_max_age_hours"], 168)
 
 
 if __name__ == "__main__":

@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import unittest
 import uuid
+from datetime import timedelta
 from pathlib import Path
 from typing import Any
 
 from connectors.base import ContextEvent
+from connectors.base import utc_now
 from execution import ActionExecutor, ApprovalGate, ApprovalStore, AuditLogger, RateLimiter, RiskPolicy, RollbackManager
 from memory.database import MemoryDatabase
 
@@ -55,6 +57,18 @@ class ExecutionTests(unittest.TestCase):
         result = executor.execute({"type": "draft_email", "plugin": "gmail", "risk": "low", "source_event_id": event.id})
         self.assertEqual(result["status"], "executed")
         self.assertGreaterEqual(database.get_event_stats(event.id).execution_count, 1)
+
+    def test_old_pending_approvals_expire_without_touching_fresh_requests(self) -> None:
+        executor = self.build_executor()
+        database = executor._test_database  # type: ignore[attr-defined]
+        old_created = (utc_now() - timedelta(days=8)).isoformat()
+        fresh_created = utc_now().isoformat()
+        database.save_approval_request("old", {"type": "send_email"}, "medium", "pending", old_created)
+        database.save_approval_request("fresh", {"type": "send_email"}, "medium", "pending", fresh_created)
+        expired = executor.approval_gate.store.expire_old_pending(older_than_seconds=7 * 24 * 3600)
+        self.assertEqual(expired, 1)
+        self.assertEqual(database.get_approval_request("old")["status"], "expired")
+        self.assertEqual(database.get_approval_request("fresh")["status"], "pending")
 
 
 if __name__ == "__main__":

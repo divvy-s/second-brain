@@ -11,7 +11,6 @@ import os
 import secrets
 import time
 import urllib.parse
-from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import RedirectResponse
@@ -33,7 +32,6 @@ GOOGLE_SCOPES = [
 
 def _get_db():
     """Get the database from the running app services."""
-    from api.dependencies import build_services
     # This is a lightweight call — build_services caches internally via app.state
     # For the auth routes, we access the DB directly
     from pathlib import Path
@@ -43,6 +41,7 @@ def _get_db():
     config = load_config(app_root / "config" / "user_config.yml")
     memory_config = config.get("memory", {})
     db = MemoryDatabase(app_root / memory_config.get("sqlite_path", "data/second_brain.sqlite3"))
+    db.initialize()
     return db
 
 

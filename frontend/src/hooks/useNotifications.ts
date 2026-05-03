@@ -1,4 +1,4 @@
-import { useEffect, useRef, useCallback } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 /**
  * Hook that requests browser notification permission and provides
@@ -6,13 +6,28 @@ import { useEffect, useRef, useCallback } from "react";
  */
 export function useNotifications() {
   const permissionRef = useRef<NotificationPermission>("default");
+  const [permission, setPermission] = useState<NotificationPermission>(() => {
+    if (!("Notification" in window)) return "denied";
+    return Notification.permission;
+  });
 
   useEffect(() => {
     if ("Notification" in window) {
-      Notification.requestPermission().then((perm) => {
-        permissionRef.current = perm;
-      });
+      permissionRef.current = Notification.permission;
+      setPermission(Notification.permission);
     }
+  }, []);
+
+  const requestPermission = useCallback(async () => {
+    if (!("Notification" in window)) {
+      permissionRef.current = "denied";
+      setPermission("denied");
+      return "denied" as NotificationPermission;
+    }
+    const next = await Notification.requestPermission();
+    permissionRef.current = next;
+    setPermission(next);
+    return next;
   }, []);
 
   const notify = useCallback(
@@ -21,7 +36,7 @@ export function useNotifications() {
       try {
         const n = new Notification(title, {
           body,
-          icon: "/icon.png",
+          icon: "/icon.svg",
           tag: `sb-${Date.now()}`,
         });
         if (onClick) {
@@ -37,5 +52,5 @@ export function useNotifications() {
     []
   );
 
-  return { notify };
+  return { notify, permission, requestPermission };
 }

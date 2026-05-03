@@ -19,7 +19,9 @@ class PluginSystemTests(unittest.TestCase):
         runner = ConnectorRunner(self.registry)
         self.assertEqual({"gmail", "slack", "whatsapp", "telegram", "calendar", "todoist"}, set(runner.connectors))
         events = runner.fetch_all_events()
-        self.assertGreaterEqual(len(events), 1)
+        self.assertIsInstance(events, list)
+        self.assertNotIn("telegram", runner.last_fetch_failures)
+        self.assertNotIn("whatsapp", runner.last_fetch_failures)
         self.assertTrue(all(event.source.startswith("mcp_") for event in events))
 
 

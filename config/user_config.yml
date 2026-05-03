@@ -7,6 +7,12 @@ api:
   allowed_origins:
     - "http://localhost:5173"
     - "http://127.0.0.1:5173"
+approvals:
+  pending_max_age_hours: 168
+rate_limits:
+  enabled: true
+  expensive_capacity: 20
+  expensive_refill_per_second: 0.333
 memory:
   sqlite_path: "data/second_brain.sqlite3"
   chroma_path: "data/chroma"
@@ -35,26 +41,43 @@ plugins:
   gmail:
     enabled: true
     access_token_env: "GMAIL_ACCESS_TOKEN"
+    client_id_env: "GOOGLE_CLIENT_ID"
+    client_secret_env: "GOOGLE_CLIENT_SECRET"
+    refresh_token_env: "GOOGLE_REFRESH_TOKEN"
     max_results: 10
   slack:
     enabled: true
     bot_token_env: "SLACK_BOT_TOKEN"
+    # Slack reads only configured channels. Set IDs here or SLACK_CHANNEL_IDS in the environment.
     channel_ids: []
   whatsapp:
     enabled: true
+    inbound_mode: "webhook"
+    polling_enabled: false
     api_key_env: "WHATSAPP_API_KEY"
     phone_number_id_env: "WHATSAPP_PHONE_NUMBER_ID"
     recipient_id_env: "WHATSAPP_RECIPIENT_ID"
+    verify_token_env: "WHATSAPP_VERIFY_TOKEN"
     api_version: "v22.0"
     base_url: "https://graph.facebook.com"
   telegram:
     enabled: true
+    inbound_mode: "webhook"
+    polling_enabled: false
     bot_token_env: "TELEGRAM_BOT_TOKEN"
     chat_id_env: "TELEGRAM_CHAT_ID"
     webhook_secret_env: "TELEGRAM_WEBHOOK_SECRET"
   calendar:
     enabled: true
     access_token_env: "CALENDAR_ACCESS_TOKEN"
+    client_id_env: "GOOGLE_CLIENT_ID"
+    client_secret_env: "GOOGLE_CLIENT_SECRET"
+    refresh_token_env: "GOOGLE_REFRESH_TOKEN"
   todoist:
     enabled: true
     api_key_env: "TODOIST_API_KEY"
+    exclude_onboarding: true
+    exclude_project_ids: []
+    exclude_labels:
+      - "template"
+      - "onboarding"

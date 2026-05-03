@@ -124,7 +124,6 @@ def update_yaml_scalar(path: str | Path, keys: list[str], value: Any) -> bool:
     value_text = "true" if value is True else "false" if value is False else json.dumps(value)
     key_stack: list[str] = []
     indent_stack: list[int] = []
-    target_depth = len(keys) - 1
     changed = False
 
     for index, raw_line in enumerate(lines):

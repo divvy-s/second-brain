@@ -1,17 +1,17 @@
 from __future__ import annotations
 
 import asyncio
-import json as _json
 import logging
 import os
+import re
 from contextlib import asynccontextmanager
 from dataclasses import asdict
 from secrets import compare_digest
 from typing import Any
 
-from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, PlainTextResponse
 
 from api.dependencies import AppServices, build_services, build_workflow
 from api.routes.auth import router as auth_router
@@ -23,10 +23,18 @@ from api.schemas import (
     PluginInstallRequest,
     PluginNameRequest,
     RetrievalRequest,
-    TelegramWebhookRequest,
 )
 from api.telegram_bot import TelegramApprovalBot
+from api.webhook_security import (
+    build_telegram_webhook_setup,
+    ensure_telegram_webhook_secret,
+    read_telegram_webhook_secret,
+    telegram_webhook_mode,
+    telegram_webhook_status,
+)
+from api.whatsapp_webhook import extract_whatsapp_events
 from connectors.base import ContextEvent
+from execution import RateLimiter
 
 
 logger = logging.getLogger(__name__)
@@ -115,10 +123,82 @@ def _api_token(config: dict[str, Any]) -> str:
     return str(os.environ.get(env_name, "")).strip()
 
 
+def _environment() -> str:
+    return os.environ.get("ENVIRONMENT", "production").strip().lower() or "production"
+
+
+def _is_development() -> bool:
+    return _environment() in {"dev", "development", "local", "test"}
+
+
 def _telegram_secret(config: dict[str, Any]) -> str:
-    telegram_config = config.get("plugins", {}).get("telegram", {})
-    env_name = str(telegram_config.get("webhook_secret_env", "TELEGRAM_WEBHOOK_SECRET"))
-    return str(os.environ.get(env_name, "")).strip() or str(telegram_config.get("webhook_secret", "")).strip()
+    return read_telegram_webhook_secret(config).secret
+
+
+def _provided_telegram_secret(request: Request) -> str:
+    header_secret = request.headers.get("X-Telegram-Bot-Api-Secret-Token", "")
+    query_secret = request.query_params.get("secret_token", "")
+    return str(header_secret or query_secret or "").strip()
+
+
+def _whatsapp_verify_token(config: dict[str, Any]) -> str:
+    whatsapp_config = config.get("plugins", {}).get("whatsapp", {})
+    env_name = str(whatsapp_config.get("verify_token_env", "WHATSAPP_VERIFY_TOKEN"))
+    return str(os.environ.get(env_name, "")).strip() or str(whatsapp_config.get("verify_token", "")).strip()
+
+
+def _safe_error(exc: Exception) -> str:
+    raw = str(exc).strip()
+    if not raw:
+        return "Request failed."
+    raw = re.sub(r"https?://\S+", "[url]", raw)
+    raw = re.sub(r"(Bearer\s+)[A-Za-z0-9._~+/=-]+", r"\1[redacted]", raw, flags=re.IGNORECASE)
+    raw = re.sub(r"([?&](?:key|token|secret|password)=)[^&\s]+", r"\1[redacted]", raw, flags=re.IGNORECASE)
+    return raw[:240]
+
+
+def _source_from_filter(source: str | None) -> str | None:
+    if not source or source == "all":
+        return None
+    if source.startswith("mcp_") or source == "system":
+        return source
+    return f"mcp_{source}"
+
+
+def _should_poll_connector(name: str, connector: Any) -> bool:
+    config = getattr(connector, "config", {}) or {}
+    mode = str(config.get("inbound_mode") or config.get("mode") or "").lower()
+    if mode == "webhook" or config.get("polling_enabled") is False:
+        return False
+    return name not in {"telegram", "whatsapp"}
+
+
+def _enforce_webhook_defaults(services: AppServices) -> None:
+    telegram_config = services.config.setdefault("plugins", {}).setdefault("telegram", {})
+    telegram_config.setdefault("inbound_mode", "webhook")
+    if telegram_webhook_mode(services.config) == "webhook":
+        telegram_config["polling_enabled"] = False
+    for name in ("telegram", "whatsapp"):
+        connector = services.runner.connectors.get(name)
+        if connector is None:
+            continue
+        connector_config = getattr(connector, "config", {}) or {}
+        connector_config.setdefault("inbound_mode", "webhook")
+        connector_config["polling_enabled"] = False
+        connector.config = connector_config
+
+
+def _rate_limit_config(config: dict[str, Any]) -> tuple[bool, int, float]:
+    rate_config = config.get("rate_limits", {})
+    enabled = bool(rate_config.get("enabled", True))
+    capacity = int(rate_config.get("expensive_capacity", 20))
+    refill = float(rate_config.get("expensive_refill_per_second", capacity / 60))
+    return enabled, max(1, capacity), max(0.01, refill)
+
+
+def _rate_limit_key(request: Request, endpoint: str) -> str:
+    client_host = request.client.host if request.client else "unknown"
+    return f"{endpoint}:{client_host}"
 
 
 # ---------------------------------------------------------------------------
@@ -132,31 +212,39 @@ _chroma_ready = asyncio.Event()
 # ---------------------------------------------------------------------------
 def create_app() -> FastAPI:
     services_obj = build_services()
+    _enforce_webhook_defaults(services_obj)
+    telegram_secret_state = ensure_telegram_webhook_secret(
+        services_obj.config,
+        environment=_environment(),
+    )
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         async def init_chroma():
             await services_obj.vector_store.initialize_async()
-            _chroma_ready.set()
+            if getattr(services_obj.vector_store, "ready", False):
+                _chroma_ready.set()
+            else:
+                logger.info("ChromaDB is not ready; SQLite/local memory search fallback is active.")
 
         async def poll_connectors():
-            """Background task: poll live connectors every 30s and broadcast new events."""
-            import sqlite3 as _sqlite3
+            """Poll only connectors that explicitly support polling."""
             seen_ids: set[str] = set()
             # Pre-seed seen_ids from DB so we don't re-alert on startup
             try:
-                conn = services_obj.database.connect()
-                for row in conn.execute("SELECT id FROM context_events"):
-                    seen_ids.add(row[0])
+                with services_obj.database.connect() as conn:
+                    for row in conn.execute("SELECT id FROM context_events"):
+                        seen_ids.add(row[0])
             except Exception:
                 pass
 
-            POLL_SOURCES = ["telegram", "slack", "gmail"]
             while True:
                 await asyncio.sleep(30)
                 try:
                     svc = services_obj
-                    for source in POLL_SOURCES:
+                    for source, connector in svc.runner.connectors.items():
+                        if not _should_poll_connector(source, connector):
+                            continue
                         connector = svc.runner.connectors.get(source)
                         if connector is None:
                             continue
@@ -171,7 +259,7 @@ def create_app() -> FastAPI:
                             # Ingest the new event into DB
                             try:
                                 workflow = build_workflow(svc)
-                                await workflow.ingest({"events": [event]})
+                                await workflow.ingest_lightweight({"events": [event]})
                             except Exception:
                                 pass
                             payload = event.to_dict()
@@ -192,6 +280,12 @@ def create_app() -> FastAPI:
                 except Exception as exc:
                     logger.warning("Connector poll error: %s", exc)
 
+        if _environment() == "production" and not _api_token(services_obj.config):
+            logger.warning("SECRET_KEY is not configured; protected API routes will return 503 in production.")
+        if telegram_secret_state.generated:
+            logger.info("Generated a development Telegram webhook secret. View setup details at /telegram/webhook/setup.")
+        elif not telegram_secret_state.configured:
+            logger.warning("TELEGRAM_WEBHOOK_SECRET is not configured; Telegram webhook requests will be rejected.")
         asyncio.create_task(init_chroma())
         asyncio.create_task(poll_connectors())
         yield
@@ -210,18 +304,26 @@ def create_app() -> FastAPI:
 
     @app.exception_handler(Exception)
     async def global_exception_handler(request: Request, exc: Exception):
-        import traceback
-
-        traceback.print_exc()
+        logger.exception("Unhandled API error on %s", request.url.path)
         return JSONResponse(
             status_code=500,
-            content={"detail": "Internal Server Error", "error": str(exc)},
+            content={"detail": "Internal server error"},
         )
 
     app.state.services = services_obj
+    rate_enabled, rate_capacity, rate_refill = _rate_limit_config(services_obj.config)
+    app.state.expensive_rate_limit_enabled = rate_enabled
+    app.state.expensive_rate_limiter = RateLimiter(capacity=rate_capacity, refill_per_second=rate_refill)
 
     def services() -> AppServices:
         return app.state.services
+
+    def check_expensive_rate_limit(request: Request, endpoint: str) -> None:
+        if not app.state.expensive_rate_limit_enabled:
+            return
+        limiter: RateLimiter = app.state.expensive_rate_limiter
+        if not limiter.allow(_rate_limit_key(request, endpoint)):
+            raise HTTPException(status_code=429, detail="Too many requests. Please wait a moment and try again.")
 
     # ── Auth Middleware ────────────────────────────────────────────────
     @app.middleware("http")
@@ -234,10 +336,9 @@ def create_app() -> FastAPI:
         # WebSocket upgrade requests bypass HTTP auth (handled separately)
         if request.url.path.startswith("/ws/"):
             return await call_next(request)
-        # Dev-mode bypass: skip auth when ENVIRONMENT=development and no token configured
+        # Dev-mode bypass is only allowed when ENVIRONMENT explicitly opts in.
         token = _api_token(services().config)
-        is_dev = os.environ.get("ENVIRONMENT", "development").lower() == "development"
-        if not token and is_dev:
+        if not token and _is_development():
             return await call_next(request)
         if not token:
             return JSONResponse(status_code=503, content={"detail": "API authentication is not configured"})
@@ -260,7 +361,10 @@ def create_app() -> FastAPI:
             "redis_backed": svc.event_bus.is_redis_backed,
             "llm_configured": svc.llm.is_configured(),
             "api_auth_configured": bool(_api_token(svc.config)),
+            "environment": _environment(),
+            "auth_bypass_active": bool(not _api_token(svc.config) and _is_development()),
             "chroma_ready": _chroma_ready.is_set(),
+            "telegram_webhook": telegram_webhook_status(svc.config),
         }
 
     # ── Plugins ────────────────────────────────────────────────────────
@@ -270,39 +374,27 @@ def create_app() -> FastAPI:
 
     # ── Events Feed ────────────────────────────────────────────────────
     @app.get("/events/feed")
-    def events_feed(limit: int = 30, source: str | None = None) -> dict[str, Any]:
+    def events_feed(
+        limit: int = Query(30, ge=1, le=100),
+        offset: int = Query(0, ge=0),
+        source: str | None = None,
+    ) -> dict[str, Any]:
         """Return recent context events for the activity feed."""
         svc = services()
-        db = svc.database
-        conn = db.connect()
-        cursor = conn.cursor()
-        if source:
-            cursor.execute(
-                "SELECT id, source, kind, title, body, occurred_at, participants_json, importance, metadata_json, semantic_summary "
-                "FROM context_events WHERE source = ? ORDER BY occurred_at DESC LIMIT ?",
-                (source, limit),
-            )
-        else:
-            cursor.execute(
-                "SELECT id, source, kind, title, body, occurred_at, participants_json, importance, metadata_json, semantic_summary "
-                "FROM context_events ORDER BY occurred_at DESC LIMIT ?",
-                (limit,),
-            )
-        events = []
-        for row in cursor.fetchall():
-            events.append({
-                "id": row[0],
-                "source": row[1],
-                "kind": row[2],
-                "title": row[3],
-                "body": row[4],
-                "occurred_at": row[5],
-                "participants": _json.loads(row[6]) if row[6] else [],
-                "importance": row[7],
-                "metadata": _json.loads(row[8]) if row[8] else {},
-                "semantic_summary": row[9],
-            })
-        return {"events": events, "total": len(events)}
+        events, total = svc.database.feed_events(
+            limit=limit,
+            offset=offset,
+            source=_source_from_filter(source),
+        )
+        serialized = [event.to_dict() for event in events]
+        return {
+            "events": serialized,
+            "total": total,
+            "limit": limit,
+            "offset": offset,
+            "has_more": offset + len(serialized) < total,
+            "next_offset": offset + len(serialized),
+        }
 
     # ── Plugin Management ──────────────────────────────────────────────
     @app.post("/plugins/install")
@@ -339,17 +431,41 @@ def create_app() -> FastAPI:
             await ws_manager.broadcast({"type": "new_event", "payload": event.to_dict()})
         return {"events": [event.to_dict() for event in ingested]}
 
+    @app.post("/events/sync")
+    async def events_sync() -> dict[str, Any]:
+        """Fetch and store connector data without planning, recommendations, or action routing."""
+        svc = services()
+        workflow = build_workflow(svc)
+        try:
+            state = await workflow.ingest_lightweight({})
+        except Exception as exc:
+            raise HTTPException(status_code=502, detail=f"Connector sync failed: {_safe_error(exc)}") from exc
+        ingested = state.get("events", [])
+        for event in ingested:
+            await ws_manager.broadcast({"type": "new_event", "payload": event.to_dict()})
+        return {
+            "ok": True,
+            "synced": len(ingested),
+            "events": [event.to_dict() for event in ingested],
+            "connector_errors": svc.runner.last_fetch_failures,
+        }
+
     @app.post("/events/retrieve")
     def retrieve(request: RetrievalRequest) -> dict[str, Any]:
-        result = services().retriever.retrieve(request.query, request.limit)
+        svc = services()
+        result = svc.retriever.retrieve(request.query, request.limit)
+        chroma_ready = bool(getattr(svc.vector_store, "ready", False))
         return {
             "hits": [_retrieval_hit_to_json(hit) for hit in result.hits],
             "structured": result.structured.to_dict(),
+            "search_mode": "semantic" if chroma_ready else "keyword_fallback",
+            "chroma_ready": chroma_ready,
         }
 
     # ── Brain Dump (async for LLM calls) ──────────────────────────────
     @app.post("/brain-dump")
-    async def brain_dump(request: BrainDumpRequest) -> dict[str, Any]:
+    async def brain_dump(request: BrainDumpRequest, raw_request: Request) -> dict[str, Any]:
+        check_expensive_rate_limit(raw_request, "brain-dump")
         svc = services()
         workflow = build_workflow(svc)
 
@@ -394,7 +510,8 @@ def create_app() -> FastAPI:
 
     # ── Orchestration ──────────────────────────────────────────────────
     @app.post("/orchestrate")
-    async def orchestrate(request: OrchestrateRequest | None = None) -> dict[str, Any]:
+    async def orchestrate(raw_request: Request, request: OrchestrateRequest | None = None) -> dict[str, Any]:
+        check_expensive_rate_limit(raw_request, "orchestrate")
         svc = services()
         events = [ContextEvent.from_dict(item) for item in request.events] if request and request.events else None
         workflow = build_workflow(svc)
@@ -434,16 +551,42 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
 
     # ── Telegram Webhook ───────────────────────────────────────────────
+    @app.get("/telegram/webhook/setup")
+    def telegram_webhook_setup(public_url: str | None = None) -> dict[str, Any]:
+        setup = build_telegram_webhook_setup(services().config, public_url)
+        if not setup.get("configured"):
+            raise HTTPException(status_code=503, detail="TELEGRAM_WEBHOOK_SECRET is not configured")
+        return setup
+
     @app.post("/telegram/webhook")
-    async def telegram_webhook(raw_request: Request, request: TelegramWebhookRequest) -> dict[str, Any]:
+    async def telegram_webhook(raw_request: Request) -> dict[str, Any]:
         expected_secret = _telegram_secret(services().config)
-        if expected_secret:
-            provided_secret = raw_request.headers.get("X-Telegram-Bot-Api-Secret-Token", "")
-            if not compare_digest(provided_secret, expected_secret):
-                raise HTTPException(status_code=401, detail="Invalid Telegram webhook secret")
-        result = TelegramApprovalBot(services()).handle_update(request.update)
+        if not expected_secret:
+            raise HTTPException(status_code=503, detail="TELEGRAM_WEBHOOK_SECRET is not configured")
+        provided_secret = _provided_telegram_secret(raw_request)
+        if not provided_secret:
+            raise HTTPException(status_code=401, detail="Missing Telegram webhook secret")
+        if not compare_digest(provided_secret, expected_secret):
+            raise HTTPException(status_code=401, detail="Invalid Telegram webhook secret")
+        try:
+            body = await raw_request.json()
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail="Malformed Telegram webhook payload") from exc
+        if not isinstance(body, dict):
+            raise HTTPException(status_code=400, detail="Malformed Telegram webhook payload")
+        update = body.get("update") if isinstance(body.get("update"), dict) else body
+        result = await TelegramApprovalBot(services()).handle_update(update)
         # Broadcast webhook event to frontend
         await ws_manager.broadcast({"type": "telegram_webhook", "payload": result})
+        if isinstance(result.get("event"), dict):
+            await ws_manager.broadcast({"type": "new_event", "payload": result["event"]})
+        if result.get("status") in {"approved", "rejected"} and isinstance(result.get("request"), dict):
+            await ws_manager.broadcast(
+                {
+                    "type": "approval_decided",
+                    "payload": {"id": result["request"].get("id"), "status": result.get("status")},
+                }
+            )
         return result
 
     # ── Live Tasks & Schedule ──────────────────────────────────────────
@@ -453,8 +596,16 @@ def create_app() -> FastAPI:
         svc = services()
         connector = svc.runner.connectors.get("todoist")
         if connector is None:
-            return {"tasks": [], "source": "disabled"}
+            return {"tasks": [], "source": "disabled", "connected": False, "message": "Todoist connector is disabled."}
         try:
+            status = connector.health_status()
+            if not status.get("healthy") and status.get("mode") in {"unconfigured", "error"} and not status.get("mock_enabled"):
+                return {
+                    "tasks": [],
+                    "source": str(status.get("mode") or "error"),
+                    "connected": False,
+                    "error": _safe_error(Exception(str(status.get("error") or "Todoist is not connected."))),
+                }
             events = connector.fetch_events()
             tasks = [
                 {
@@ -468,9 +619,9 @@ def create_app() -> FastAPI:
                 for e in events
                 if e.kind == "task"
             ]
-            return {"tasks": tasks, "source": "live"}
+            return {"tasks": tasks, "source": "live", "connected": True}
         except Exception as exc:
-            return {"tasks": [], "source": "error", "error": str(exc)}
+            return {"tasks": [], "source": "error", "connected": False, "error": _safe_error(exc)}
 
     @app.get("/schedule/upcoming")
     def schedule_upcoming() -> dict[str, Any]:
@@ -478,8 +629,21 @@ def create_app() -> FastAPI:
         svc = services()
         connector = svc.runner.connectors.get("calendar")
         if connector is None:
-            return {"events": [], "source": "disabled"}
+            return {
+                "events": [],
+                "source": "disabled",
+                "connected": False,
+                "message": "Calendar connector is disabled.",
+            }
         try:
+            status = connector.health_status()
+            if not status.get("healthy") and status.get("mode") in {"unconfigured", "error"} and not status.get("mock_enabled"):
+                return {
+                    "events": [],
+                    "source": str(status.get("mode") or "error"),
+                    "connected": False,
+                    "error": _safe_error(Exception(str(status.get("error") or "Calendar is not connected."))),
+                }
             events = connector.fetch_events()
             schedule = [
                 {
@@ -493,9 +657,9 @@ def create_app() -> FastAPI:
                 }
                 for e in events
             ]
-            return {"events": schedule, "source": "live"}
+            return {"events": schedule, "source": "live", "connected": True}
         except Exception as exc:
-            return {"events": [], "source": "error", "error": str(exc)}
+            return {"events": [], "source": "error", "connected": False, "error": _safe_error(exc)}
 
     # ── WhatsApp Cloud API Webhook ──────────────────────────────────────
     @app.get("/whatsapp/webhook")
@@ -505,9 +669,11 @@ def create_app() -> FastAPI:
         mode = params.get("hub.mode")
         token = params.get("hub.verify_token")
         challenge = params.get("hub.challenge")
-        expected = os.environ.get("WHATSAPP_VERIFY_TOKEN", "second_brain_verify")
+        expected = _whatsapp_verify_token(services().config)
+        if not expected:
+            raise HTTPException(status_code=503, detail="WHATSAPP_VERIFY_TOKEN is not configured")
         if mode == "subscribe" and token == expected:
-            return JSONResponse(content=int(challenge) if challenge and challenge.isdigit() else challenge)
+            return PlainTextResponse(str(challenge or ""))
         return JSONResponse(status_code=403, content={"detail": "Verification failed"})
 
     @app.post("/whatsapp/webhook")
@@ -515,50 +681,34 @@ def create_app() -> FastAPI:
         """WhatsApp Cloud API POSTs incoming messages here."""
         try:
             body = await request.json()
-        except Exception:
-            return {"ok": False}
-        # Parse the WhatsApp Cloud API message format
-        for entry in body.get("entry", []):
-            for change in entry.get("changes", []):
-                value = change.get("value", {})
-                for message in value.get("messages", []):
-                    msg_id = message.get("id", "")
-                    from_number = message.get("from", "")
-                    msg_text = ""
-                    if message.get("type") == "text":
-                        msg_text = message.get("text", {}).get("body", "")
-                    elif message.get("type") == "image":
-                        msg_text = message.get("image", {}).get("caption", "[image]")
-                    event_id = f"whatsapp-{msg_id}"
-                    event = ContextEvent(
-                        id=event_id,
-                        source="mcp_whatsapp",
-                        kind="message",
-                        title=f"WhatsApp from {from_number}",
-                        body=msg_text,
-                        participants=[from_number],
-                        importance=0.75,
-                        metadata={"message_id": msg_id, "from": from_number},
-                    )
-                    # Store & broadcast
-                    try:
-                        svc = services()
-                        workflow = build_workflow(svc)
-                        await workflow.ingest({"events": [event]})
-                    except Exception:
-                        pass
-                    await ws_manager.broadcast({"type": "new_event", "payload": event.to_dict()})
-                    # Urgent alert
-                    if "urgent" in msg_text.lower():
-                        await ws_manager.broadcast({
-                            "type": "urgent_alert",
-                            "payload": {
-                                "source": "whatsapp",
-                                "title": "🚨 Urgent WhatsApp Message",
-                                "body": msg_text,
-                            }
-                        })
-        return {"ok": True}
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail="Malformed WhatsApp webhook payload") from exc
+        if not isinstance(body, dict):
+            raise HTTPException(status_code=400, detail="Malformed WhatsApp webhook payload")
+        events, ignored = extract_whatsapp_events(body)
+        processed = 0
+        for event in events:
+            original_event_id = event.id
+            try:
+                svc = services()
+                workflow = build_workflow(svc)
+                state = await workflow.ingest_lightweight({"events": [event]})
+                stored_events = state.get("events", [])
+                event = stored_events[0] if stored_events else event
+            except Exception as exc:
+                logger.warning("WhatsApp webhook ingestion failed for %s: %s", original_event_id, _safe_error(exc))
+            await ws_manager.broadcast({"type": "new_event", "payload": event.to_dict()})
+            processed += 1
+            if "urgent" in event.body.lower():
+                await ws_manager.broadcast({
+                    "type": "urgent_alert",
+                    "payload": {
+                        "source": "whatsapp",
+                        "title": "Urgent WhatsApp Message",
+                        "body": event.body,
+                    }
+                })
+        return {"ok": True, "processed": processed, "ignored": ignored}
 
     # ── WebSocket Endpoint ─────────────────────────────────────────────
     @app.websocket("/ws/events")

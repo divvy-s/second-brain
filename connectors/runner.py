@@ -180,10 +180,24 @@ class ConnectorRunner:
         self.connectors = self.registry.load_enabled_plugins()
         self.last_fetch_failures = {}
 
+    def _polling_disabled_reason(self, name: str, connector: BaseConnector) -> str | None:
+        mode = str(connector.config.get("inbound_mode") or connector.config.get("mode") or "").lower()
+        if name in {"telegram", "whatsapp"} and mode in {"", "webhook"}:
+            return "webhook_only"
+        if mode == "webhook":
+            return "webhook_only"
+        if connector.config.get("polling_enabled") is False:
+            return "polling_disabled"
+        return None
+
     def fetch_all_events(self) -> list[ContextEvent]:
         events: list[ContextEvent] = []
         failures: dict[str, str] = {}
         for name, connector in self.connectors.items():
+            disabled_reason = self._polling_disabled_reason(name, connector)
+            if disabled_reason:
+                logger.info("Skipping %s connector fetch because %s", name, disabled_reason)
+                continue
             try:
                 events.extend(connector.fetch_events())
             except Exception as exc:

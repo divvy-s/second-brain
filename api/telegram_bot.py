@@ -12,8 +12,12 @@ class TelegramApprovalBot:
     def __init__(self, services: AppServices) -> None:
         self.services = services
 
-    def handle_update(self, update: dict[str, Any]) -> dict[str, Any]:
+    async def handle_update(self, update: dict[str, Any]) -> dict[str, Any]:
+        if not isinstance(update, dict):
+            return {"status": "ignored", "reason": "Malformed Telegram update"}
         message = update.get("message") or update.get("edited_message") or {}
+        if not isinstance(message, dict):
+            return {"status": "ignored", "reason": "No Telegram message payload"}
         text = str(message.get("text") or "").strip()
         if text:
             approval = self._handle_text(text)
@@ -27,7 +31,7 @@ class TelegramApprovalBot:
                 participants=[str(message.get("from", {}).get("username") or message.get("from", {}).get("id") or "")],
                 metadata={"chat_id": message.get("chat", {}).get("id"), "update_id": update.get("update_id")},
             )
-            stored = build_workflow(self.services).ingest({"events": [event]})["events"][0]
+            stored = (await build_workflow(self.services).ingest_lightweight({"events": [event]}))["events"][0]
             return {"status": "captured", "event": stored.to_dict()}
         voice = message.get("voice")
         if voice:
@@ -39,18 +43,24 @@ class TelegramApprovalBot:
                 participants=[str(message.get("from", {}).get("username") or message.get("from", {}).get("id") or "")],
                 metadata={"voice": voice, "chat_id": message.get("chat", {}).get("id")},
             )
-            stored = build_workflow(self.services).ingest({"events": [event]})["events"][0]
+            stored = (await build_workflow(self.services).ingest_lightweight({"events": [event]}))["events"][0]
             return {"status": "voice_captured", "event": stored.to_dict()}
         return {"status": "ignored"}
 
     def _handle_text(self, text: str) -> dict[str, Any] | None:
         approve = re.match(r"^/approve\s+([0-9a-fA-F-]{8,})", text)
         if approve:
-            request = self.services.approval_gate.approve(approve.group(1))
+            try:
+                request = self.services.approval_gate.approve(approve.group(1))
+            except KeyError:
+                return {"status": "approval_not_found", "request_id": approve.group(1)}
             execution = self.services.executor.execute_approved(request.id)
             return {"status": "approved", "request": request.__dict__, "execution": execution}
         reject = re.match(r"^/reject\s+([0-9a-fA-F-]{8,})", text)
         if reject:
-            request = self.services.approval_gate.reject(reject.group(1))
+            try:
+                request = self.services.approval_gate.reject(reject.group(1))
+            except KeyError:
+                return {"status": "approval_not_found", "request_id": reject.group(1)}
             return {"status": "rejected", "request": request.__dict__}
         return None

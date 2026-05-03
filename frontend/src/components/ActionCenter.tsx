@@ -5,8 +5,8 @@ type ApprovalRequest = {
   id: string;
   status: string;
   action: {
-    type: string;
-    plugin: string;
+    type?: string;
+    plugin?: string;
     title?: string;
     description?: string;
     [key: string]: any;
@@ -92,8 +92,8 @@ export function ActionCenter({ isOpen, onClose, approvals, onApprove, onReject }
             {current && (
               <div className="action-card">
                 <div className="action-card-header">
-                  <span className="action-type">{current.action.type.replace(/_/g, " ")}</span>
-                  <span className="action-plugin">{current.action.plugin}</span>
+                  <span className="action-type">{(current.action.type || "action").replace(/_/g, " ")}</span>
+                  <span className="action-plugin">{current.action.plugin || "unknown"}</span>
                 </div>
                 <h3 className="action-title">{current.action.title || "Pending Action"}</h3>
                 {current.action.description && (

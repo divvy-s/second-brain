@@ -51,6 +51,9 @@ class ApprovalStore:
     def list(self, status: str | None = None) -> list[ApprovalRequest]:
         return [ApprovalRequest(**item) for item in self.database.list_approval_requests(status)]
 
+    def expire_old_pending(self, *, older_than_seconds: int) -> int:
+        return self.database.expire_pending_approval_requests(older_than_seconds=older_than_seconds)
+
 
 class RiskPolicy:
     def __init__(self, threshold: str = "medium") -> None:

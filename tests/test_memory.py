@@ -46,6 +46,22 @@ class MemoryTests(unittest.TestCase):
         self.assertTrue(database.search_entities("Launch Team"))
         self.assertGreaterEqual(database.get_event_stats(event.id).retrieval_count, 1)
 
+    def test_retrieval_uses_sqlite_keyword_fallback_when_vector_store_is_not_ready(self) -> None:
+        tmp_path = Path.cwd() / ".test_runs" / str(uuid.uuid4())
+        tmp_path.mkdir(parents=True, exist_ok=True)
+        database = MemoryDatabase(tmp_path / "memory.sqlite3")
+        database.initialize()
+        event = ContextEvent(
+            source="mcp_slack",
+            kind="message",
+            title="Fallback search target",
+            body="SQLite should find this when vector search is unavailable.",
+            importance=0.5,
+        )
+        database.add_event(event)
+        result = HybridRetriever(database, VectorStore(tmp_path / "vectors")).retrieve("SQLite unavailable", limit=5)
+        self.assertEqual(result[0].event.id, event.id)
+
 
 if __name__ == "__main__":
     unittest.main()

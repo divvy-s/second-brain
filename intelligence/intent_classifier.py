@@ -16,7 +16,7 @@ from datetime import datetime, timezone
 from typing import Any
 from zoneinfo import ZoneInfo
 
-from intelligence.llm_adapter import LLMAdapter, LLMRequest, LLMUnavailable
+from intelligence.llm_adapter import LLMAdapter, LLMRequest
 
 
 @dataclass(frozen=True)

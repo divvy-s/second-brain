@@ -1,17 +1,21 @@
 import { useEffect, useMemo, useState, useCallback } from "react";
 import {
+  AlertTriangle,
   Bell,
   Brain,
+  CalendarDays,
   Check,
   CircleOff,
   Loader2,
   RefreshCw,
   Search,
   Send,
+  Wifi,
+  WifiOff,
   X,
   Zap,
 } from "lucide-react";
-import { ApprovalRequest, ContextEvent, HealthData, Plugin, api } from "./api";
+import { ApprovalRequest, ContextEvent, HealthData, Plugin, ScheduleResponse, TasksResponse, api } from "./api";
 import { ActionCenter } from "./components/ActionCenter";
 import { AgendaMenu } from "./components/AgendaMenu";
 import { useWebSocket } from "./hooks/useWebSocket";
@@ -20,16 +24,17 @@ import { useToast } from "./context/ToastContext";
 import { ToastContainer } from "./components/Toast";
 
 type LoadState = "idle" | "loading" | "error";
+type SearchState = "idle" | "loading" | "done" | "error";
 type FeedFilter = "all" | "email" | "telegram" | "whatsapp" | "calendar" | "slack" | "brain_dump";
 
 const SOURCE_ICONS: Record<string, string> = {
-  mcp_gmail: "📧",
-  mcp_telegram: "💬",
-  mcp_whatsapp: "📱",
-  mcp_calendar: "📅",
-  mcp_slack: "🔔",
-  mcp_todoist: "✅",
-  system: "🧠",
+  mcp_gmail: "EM",
+  mcp_telegram: "TG",
+  mcp_whatsapp: "WA",
+  mcp_calendar: "CA",
+  mcp_slack: "SL",
+  mcp_todoist: "TD",
+  system: "SB",
 };
 
 const SOURCE_LABELS: Record<string, string> = {
@@ -57,6 +62,58 @@ function relativeTime(iso: string): string {
   return date.toLocaleDateString();
 }
 
+function FeedSkeleton({ count = 5 }: { count?: number }) {
+  return (
+    <>
+      {Array.from({ length: count }).map((_, index) => (
+        <div className="feed-item skeleton-row" key={index}>
+          <div className="feed-source-icon skeleton-block" />
+          <div className="feed-body">
+            <div className="skeleton-line" />
+            <div className="skeleton-line medium" />
+            <div className="skeleton-line tiny" />
+          </div>
+        </div>
+      ))}
+    </>
+  );
+}
+
+function sourceMark(source: string): string {
+  return SOURCE_LABELS[source]?.slice(0, 2).toUpperCase() || source.slice(0, 2).toUpperCase();
+}
+
+function humanizeError(message?: string): string {
+  if (!message) return "Not connected yet.";
+  if (message.includes("{") || message.includes("Traceback")) return "The connector returned an internal error.";
+  return message.replace(/^RuntimeError:\s*/i, "").slice(0, 180);
+}
+
+function connectorTone(status?: { healthy?: boolean; mode?: string; error?: string; mock_enabled?: boolean }): "good" | "warn" | "bad" | "muted" {
+  if (!status) return "muted";
+  if (status.healthy) return "good";
+  if (status.mock_enabled || status.mode === "mock") return "warn";
+  return "bad";
+}
+
+function connectorLabel(status?: { healthy?: boolean; mode?: string; error?: string; mock_enabled?: boolean }): string {
+  if (!status) return "Unknown";
+  if (status.healthy && status.mode === "webhook") return "Webhook ready";
+  if (status.healthy) return "Connected";
+  if (status.mock_enabled || status.mode === "mock") return "Mock data";
+  if (status.mode === "unconfigured") return "Setup needed";
+  if (status.mode === "error") return "Error";
+  return "Disconnected";
+}
+
+function intentSummary(intents: Array<{ type: string; plugin?: string }>): string {
+  const actions = intents
+    .map((intent) => [intent.type?.replace(/_/g, " "), intent.plugin].filter(Boolean).join(" via "))
+    .filter(Boolean);
+  if (actions.length === 0) return "No actions were generated.";
+  return actions.join(", ");
+}
+
 export function App() {
   const [plugins, setPlugins] = useState<Plugin[]>([]);
   const [health, setHealth] = useState<HealthData | null>(null);
@@ -64,21 +121,39 @@ export function App() {
   const [feedEvents, setFeedEvents] = useState<ContextEvent[]>([]);
   const [tasks, setTasks] = useState<any[]>([]);
   const [schedule, setSchedule] = useState<any[]>([]);
+  const [tasksState, setTasksState] = useState<TasksResponse>({ tasks: [], source: "idle", connected: true });
+  const [scheduleState, setScheduleState] = useState<ScheduleResponse>({ events: [], source: "idle", connected: true });
   const [feedFilter, setFeedFilter] = useState<FeedFilter>("all");
+  const [feedTotal, setFeedTotal] = useState(0);
+  const [feedOffset, setFeedOffset] = useState(0);
+  const [feedHasMore, setFeedHasMore] = useState(false);
   const [hits, setHits] = useState<Array<{ event: ContextEvent; score: number }>>([]);
+  const [searchState, setSearchState] = useState<SearchState>("idle");
+  const [searchMode, setSearchMode] = useState<"semantic" | "keyword_fallback">("keyword_fallback");
+  const [searchError, setSearchError] = useState("");
   const [captureText, setCaptureText] = useState("");
   const [query, setQuery] = useState("");
-  const [lastRun, setLastRun] = useState<Record<string, unknown> | null>(null);
+  const [lastRun, setLastRun] = useState<{ title: string; body: string; issues?: Record<string, string> } | null>(null);
   const [loadState, setLoadState] = useState<LoadState>("idle");
   const [capturing, setCapturing] = useState(false);
   const [error, setError] = useState("");
   const [isActionCenterOpen, setActionCenterOpen] = useState(false);
   const [isAgendaOpen, setAgendaOpen] = useState(false);
 
-  const { notify } = useNotifications();
+  const { notify, permission, requestPermission } = useNotifications();
   const { pushToast } = useToast();
 
   const enabledCount = useMemo(() => plugins.filter((p) => p.enabled).length, [plugins]);
+  const visibleConnectors = useMemo(
+    () => ["telegram", "whatsapp", "gmail", "calendar", "slack", "todoist"],
+    []
+  );
+  const connectorIssues = useMemo(() => {
+    if (!health?.plugins) return [];
+    return visibleConnectors
+      .map((name) => ({ name, status: health.plugins[name] }))
+      .filter(({ status }) => status && !status.healthy && status.mode !== "mock");
+  }, [health, visibleConnectors]);
 
   const filteredFeed = useMemo(() => {
     if (feedFilter === "all") return feedEvents;
@@ -88,6 +163,20 @@ export function App() {
     });
   }, [feedEvents, feedFilter]);
 
+  function replaceFeed(events: ContextEvent[]) {
+    setFeedEvents(events);
+  }
+
+  function appendFeed(events: ContextEvent[]) {
+    setFeedEvents((prev) => {
+      const seen = new Set(prev.map((event) => event.id));
+      return [...prev, ...events.filter((event) => !seen.has(event.id))];
+    });
+  }
+
+  const agendaTaskLabel = tasks.length > 0 ? `${tasks.length} tasks` : "";
+  const agendaEventLabel = schedule.length > 0 ? `${schedule.length} events` : "";
+
   async function refresh() {
     setLoadState("loading");
     setError("");
@@ -96,16 +185,21 @@ export function App() {
         api.plugins(),
         api.health(),
         api.approvals(),
-        api.feed(50),
+        api.feed(50, 0),
         api.tasks(),
         api.schedule()
       ]);
       setPlugins(pluginResult.plugins);
       setHealth(healthResult);
       setApprovals(approvalResult.approvals);
-      setFeedEvents(feedResult.events);
+      replaceFeed(feedResult.events);
+      setFeedTotal(feedResult.total);
+      setFeedOffset(feedResult.next_offset);
+      setFeedHasMore(feedResult.has_more);
       setTasks(tasksResult.tasks || []);
+      setTasksState(tasksResult);
       setSchedule(scheduleResult.events || []);
+      setScheduleState(scheduleResult);
       setLoadState("idle");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Request failed");
@@ -116,10 +210,25 @@ export function App() {
   async function refreshApprovals() {
     const [approvalResult, feedResult] = await Promise.all([
       api.approvals(),
-      api.feed(50),
+      api.feed(50, 0),
     ]);
     setApprovals(approvalResult.approvals);
-    setFeedEvents(feedResult.events);
+    replaceFeed(feedResult.events);
+    setFeedTotal(feedResult.total);
+    setFeedOffset(feedResult.next_offset);
+    setFeedHasMore(feedResult.has_more);
+  }
+
+  async function loadMoreFeed() {
+    try {
+      const feedResult = await api.feed(50, feedOffset);
+      appendFeed(feedResult.events);
+      setFeedTotal(feedResult.total);
+      setFeedOffset(feedResult.next_offset);
+      setFeedHasMore(feedResult.has_more);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not load older events.");
+    }
   }
 
   useEffect(() => {
@@ -139,8 +248,13 @@ export function App() {
     if (!captureText.trim()) return;
     setCapturing(true);
     try {
-      await api.brainDump(captureText);
+      const result = await api.brainDump(captureText);
       setCaptureText("");
+      pushToast({
+        title: "Capture saved",
+        body: `${result.approvals?.length || 0} approvals generated. ${intentSummary(result.intents || [])}`,
+        type: "info"
+      });
       await refreshApprovals();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Capture failed");
@@ -151,15 +265,48 @@ export function App() {
 
   async function retrieve() {
     if (!query.trim()) return;
-    const result = await api.retrieve(query);
-    setHits(result.hits);
+    setSearchState("loading");
+    setSearchError("");
+    try {
+      const result = await api.retrieve(query);
+      setHits(result.hits);
+      setSearchMode(result.search_mode === "semantic" ? "semantic" : "keyword_fallback");
+      setSearchState("done");
+    } catch (err) {
+      setSearchError(err instanceof Error ? err.message : "Search failed.");
+      setSearchState("error");
+    }
   }
 
   async function runBrain() {
     setLoadState("loading");
     try {
       const result = await api.orchestrate();
-      setLastRun(result);
+      const results = Array.isArray(result.results) ? result.results.length : 0;
+      setLastRun({ title: "Thinking complete", body: `${results} orchestration results are ready.` });
+      await refresh();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Sync failed");
+    } finally {
+      setLoadState("idle");
+    }
+  }
+
+  async function syncConnectors() {
+    setLoadState("loading");
+    setError("");
+    try {
+      const result = await api.sync();
+      setLastRun({
+        title: "Connector sync complete",
+        body: `${result.synced} new events indexed.`,
+        issues: result.connector_errors
+      });
+      pushToast({
+        title: "Sync complete",
+        body: `${result.synced} new events indexed.`,
+        type: "info"
+      });
       await refresh();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Sync failed");
@@ -226,7 +373,7 @@ export function App() {
         });
       }
       refresh();
-    } else if (msg.type === "approval_request") {
+    } else if (msg.type === "approval_request" || msg.type === "new_approval") {
       pushToast({
         title: "Action Required",
         body: `New approval request for ${msg.payload?.action?.type || "an action"}`,
@@ -257,15 +404,18 @@ export function App() {
           </div>
           <div>
             <h1>Second Brain</h1>
-            <span className="brand-subtitle">{enabledCount} plugins · {feedEvents.length} events indexed</span>
+            <span className="brand-subtitle">{enabledCount} plugins - {feedEvents.length} events indexed</span>
           </div>
         </div>
         <div className="topbar-actions">
           <button className="btn" onClick={() => setAgendaOpen(true)} title="Agenda">
-            <Check size={15} />
+            <CalendarDays size={15} />
             Agenda
-            {(tasks.length > 0 || schedule.length > 0) && (
-              <span className="nav-badge pulse">{tasks.length + schedule.length}</span>
+            {agendaTaskLabel && (
+              <span className="nav-badge pulse" title="Pending tasks">{agendaTaskLabel}</span>
+            )}
+            {agendaEventLabel && (
+              <span className="nav-badge neutral" title="Calendar events">{agendaEventLabel}</span>
             )}
           </button>
           <button className="btn" onClick={() => setActionCenterOpen(true)} title="Action Center">
@@ -275,9 +425,13 @@ export function App() {
               <span className="nav-badge pulse">{approvals.length}</span>
             )}
           </button>
-          <button className="btn" onClick={runBrain} title="Sync Plugins & Run Orchestration">
-            <Zap size={15} />
+          <button className="btn" onClick={syncConnectors} title="Sync connectors">
+            <RefreshCw size={15} />
             Sync
+          </button>
+          <button className="btn" onClick={runBrain} title="Run orchestration and action planning">
+            <Zap size={15} />
+            Think
           </button>
           <button className="btn btn-icon" onClick={refresh} title="Refresh">
             {loadState === "loading" ? <Loader2 className="spin" size={16} /> : <RefreshCw size={16} />}
@@ -286,6 +440,31 @@ export function App() {
       </header>
 
       {error && <div className="notice error">{error}</div>}
+      {permission !== "granted" && (
+        <div className={`notice notification ${permission === "denied" ? "warning" : ""}`}>
+          <div>
+            <strong>Urgent notifications are {permission === "denied" ? "blocked" : "off"}.</strong>
+            <span> Enable browser notifications to receive urgent WhatsApp and approval alerts.</span>
+          </div>
+          {permission === "default" ? (
+            <button className="btn btn-primary" onClick={requestPermission}>
+              <Bell size={15} />
+              Enable
+            </button>
+          ) : (
+            <span className="notice-hint">Use your browser site settings to allow notifications.</span>
+          )}
+        </div>
+      )}
+      {connectorIssues.length > 0 && (
+        <div className="notice connector-warning">
+          <AlertTriangle size={16} />
+          <div>
+            <strong>{connectorIssues.length} connector{connectorIssues.length === 1 ? "" : "s"} need attention.</strong>
+            <span> {connectorIssues.map(({ name, status }) => `${name}: ${connectorLabel(status)}`).join(", ")}</span>
+          </div>
+        </div>
+      )}
 
       <ActionCenter
         isOpen={isActionCenterOpen}
@@ -310,10 +489,16 @@ export function App() {
                 <div className="plugin-info">
                   <div className="plugin-name">{plugin.name}</div>
                   <div className="plugin-meta">
-                    {plugin.enabled ? "enabled" : "disabled"} · v{plugin.version}
+                    {plugin.enabled ? connectorLabel(health?.plugins?.[plugin.name]) : "Disabled"} - v{plugin.version}
                   </div>
                 </div>
-                {plugin.enabled ? <Check size={14} style={{ color: "var(--accent-emerald)" }} /> : <CircleOff size={14} style={{ color: "var(--text-muted)" }} />}
+                {plugin.enabled && connectorTone(health?.plugins?.[plugin.name]) === "good" ? (
+                  <Wifi size={14} style={{ color: "var(--accent-emerald)" }} />
+                ) : plugin.enabled ? (
+                  <WifiOff size={14} style={{ color: "var(--accent-amber)" }} />
+                ) : (
+                  <CircleOff size={14} style={{ color: "var(--text-muted)" }} />
+                )}
               </div>
             ))}
           </div>
@@ -335,6 +520,34 @@ export function App() {
             <div className="status-row">
               <span className="status-label">Events</span>
               <span className="status-value good">{feedEvents.length}</span>
+            </div>
+            <div className="status-row">
+              <span className="status-label">Memory Search</span>
+              <span className={`status-value ${health?.chroma_ready ? "good" : "warn"}`}>
+                {health?.chroma_ready ? "Semantic" : "Keyword fallback"}
+              </span>
+            </div>
+            <div className="status-row">
+              <span className="status-label">Telegram Webhook</span>
+              <span className={`status-value ${health?.telegram_webhook?.safe_for_webhook ? "good" : "warn"}`}>
+                {health?.telegram_webhook?.safe_for_webhook ? "Ready" : "Setup needed"}
+              </span>
+            </div>
+          </div>
+
+          <div className="sidebar-section">
+            <h3>Connector Health</h3>
+            <div className="connector-grid">
+              {visibleConnectors.map((name) => {
+                const status = health?.plugins?.[name];
+                const tone = connectorTone(status);
+                return (
+                  <div className={`connector-pill ${tone}`} key={name}>
+                    <span>{name}</span>
+                    <strong>{connectorLabel(status)}</strong>
+                  </div>
+                );
+              })}
             </div>
           </div>
         </aside>
@@ -358,14 +571,14 @@ export function App() {
               placeholder="Type a task, message, reminder, or note... (Ctrl+Enter to send)"
             />
             <div className="capture-actions">
-              <span className="capture-hint">Actions appear in Approvals instantly. Click ✓ to execute.</span>
+              <span className="capture-hint">Generated actions appear in Approvals for review.</span>
               <button
                 className="btn btn-primary"
                 onClick={capture}
                 disabled={capturing || !captureText.trim()}
               >
                 {capturing ? <Loader2 className="spin" size={15} /> : <Send size={15} />}
-                {capturing ? "Generating…" : "Capture"}
+                {capturing ? "Generating..." : "Capture"}
               </button>
             </div>
           </div>
@@ -393,12 +606,17 @@ export function App() {
             </div>
 
             <div className="feed-list">
-              {filteredFeed.length === 0 && (
-                <div className="approval-empty">No events yet. Sync plugins to pull in your data.</div>
+              {loadState === "loading" && feedEvents.length === 0 && <FeedSkeleton />}
+              {loadState !== "loading" && filteredFeed.length === 0 && (
+                <div className="approval-empty">
+                  {feedFilter === "all"
+                    ? "No activity yet. Sync connectors or capture a note to start filling the feed."
+                    : `No ${feedFilter === "brain_dump" ? "notes" : feedFilter} events loaded yet.`}
+                </div>
               )}
               {filteredFeed.map((event) => {
                 const sourceLabel = SOURCE_LABELS[event.source] ?? event.source;
-                const icon = SOURCE_ICONS[event.source] ?? "📌";
+                const icon = sourceMark(event.source);
                 return (
                   <div className="feed-item" key={event.id}>
                     <div className={`feed-source-icon ${sourceLabel}`}>{icon}</div>
@@ -409,7 +627,7 @@ export function App() {
                       {/* AI Summary Block */}
                       {event.semantic_summary && event.semantic_summary.trim() !== "" && (
                         <div className="feed-summary">
-                          <span className="summary-icon">✨ AI Summary</span>
+                          <span className="summary-icon">AI Summary</span>
                           <p>{event.semantic_summary}</p>
                         </div>
                       )}
@@ -422,6 +640,14 @@ export function App() {
                   </div>
                 );
               })}
+              {feedHasMore && feedFilter === "all" && (
+                <button className="btn load-more" onClick={loadMoreFeed}>
+                  Load more
+                </button>
+              )}
+              {feedTotal > 0 && (
+                <div className="feed-count">{feedEvents.length} of {feedTotal} loaded</div>
+              )}
             </div>
           </div>
         </div>
@@ -442,10 +668,10 @@ export function App() {
               const info = getApprovalInfo(request);
               return (
                 <div className="approval-card" key={request.id}>
-                  <div className="approval-type">{info.type} → {info.plugin}</div>
+                  <div className="approval-type">{info.type} to {info.plugin}</div>
                   <div className="approval-title">{info.title || "(untitled)"}</div>
                   {info.detail && <div className="approval-detail">{info.detail}</div>}
-                  <div className="approval-detail">{request.risk} risk · {request.id.slice(0, 8)}</div>
+                  <div className="approval-detail">{request.risk} risk - {request.id.slice(0, 8)}</div>
                   <div className="approval-actions">
                     <button className="btn btn-icon success" onClick={() => decide(request, true)} title="Approve & Execute">
                       <Check size={16} />
@@ -462,25 +688,38 @@ export function App() {
           {/* Memory Search */}
           <div className="sidebar-section">
             <h3>Memory Search</h3>
+            <div className={`mini-status ${health?.chroma_ready ? "good" : "warn"}`}>
+              {health?.chroma_ready ? "Semantic search ready" : "Using keyword fallback while semantic search warms up"}
+            </div>
             <div className="search-row">
               <input
                 className="search-input"
                 value={query}
                 onChange={(e) => setQuery(e.target.value)}
                 onKeyDown={(e) => { if (e.key === "Enter") retrieve(); }}
-                placeholder="Search your memory…"
+                placeholder="Search your memory..."
               />
               <button className="btn btn-icon" onClick={retrieve} title="Search">
-                <Search size={15} />
+                {searchState === "loading" ? <Loader2 className="spin" size={15} /> : <Search size={15} />}
               </button>
             </div>
             <div className="search-results">
+              {searchState === "error" && (
+                <div className="approval-empty">{humanizeError(searchError)}</div>
+              )}
+              {searchState === "done" && hits.length === 0 && (
+                <div className="approval-empty">
+                  {searchMode === "keyword_fallback"
+                    ? "No keyword matches yet. Semantic search is still warming up, but local search is active."
+                    : "No matching memories found."}
+                </div>
+              )}
               {hits.map((hit) => (
                 <div className="search-hit" key={hit.event.id}>
                   <div className="search-hit-title">{hit.event.title}</div>
                   <div className="search-hit-body">{hit.event.body}</div>
                   <div className="search-hit-meta">
-                    {hit.event.source} · score {hit.score.toFixed(2)}
+                    {hit.event.source} - score {hit.score.toFixed(2)}
                   </div>
                 </div>
               ))}
@@ -494,12 +733,25 @@ export function App() {
         onClose={() => setAgendaOpen(false)} 
         tasks={tasks} 
         schedule={schedule} 
+        loading={loadState === "loading"}
+        tasksState={tasksState}
+        scheduleState={scheduleState}
       />
 
       {/* ============ Sync Band ============ */}
       {lastRun && (
         <div className="sync-band">
-          <pre>{JSON.stringify(lastRun.results ?? lastRun, null, 2)}</pre>
+          <div className="sync-summary">
+            <strong>{lastRun.title}</strong>
+            <span>{lastRun.body}</span>
+          </div>
+          {lastRun.issues && Object.keys(lastRun.issues).length > 0 && (
+            <div className="sync-issues">
+              {Object.entries(lastRun.issues).map(([name, issue]) => (
+                <span key={name}>{name}: {humanizeError(issue)}</span>
+              ))}
+            </div>
+          )}
         </div>
       )}
     </main>

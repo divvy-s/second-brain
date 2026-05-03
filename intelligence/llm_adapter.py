@@ -4,7 +4,10 @@ import json
 from dataclasses import dataclass, field
 from typing import Any
 
-from openai import AsyncOpenAI
+try:
+    from openai import AsyncOpenAI
+except ModuleNotFoundError:
+    AsyncOpenAI = None  # type: ignore[assignment]
 
 
 @dataclass(frozen=True)
@@ -45,7 +48,7 @@ class LLMAdapter:
 
         if client_factory:
             self._client = client_factory(api_key=self.api_key, base_url=self.base_url or None)
-        elif self.api_key:
+        elif self.api_key and AsyncOpenAI is not None:
             self._client = AsyncOpenAI(api_key=self.api_key, base_url=self.base_url or None)
         else:
             self._client = None

@@ -145,7 +145,7 @@ button, textarea, input, select {
 .brand h1 {
   font-size: 1.3rem;
   font-weight: 700;
-  letter-spacing: -0.02em;
+  letter-spacing: 0;
   background: var(--accent-gradient);
   -webkit-background-clip: text;
   -webkit-text-fill-color: transparent;
@@ -193,7 +193,7 @@ button, textarea, input, select {
   font-size: 0.7rem;
   font-weight: 600;
   text-transform: uppercase;
-  letter-spacing: 0.08em;
+  letter-spacing: 0;
   color: var(--text-muted);
   margin-bottom: 10px;
   padding: 0 4px;
@@ -271,6 +271,39 @@ button, textarea, input, select {
 .status-value.good { color: var(--accent-emerald); }
 .status-value.warn { color: var(--accent-amber); }
 .status-value.bad { color: var(--accent-rose); }
+
+.connector-grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 6px;
+}
+
+.connector-pill {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 10px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-subtle);
+  background: var(--bg-surface);
+  font-size: 0.76rem;
+  text-transform: capitalize;
+}
+
+.connector-pill strong {
+  font-size: 0.68rem;
+  font-weight: 600;
+  text-transform: none;
+}
+
+.connector-pill.good { border-color: rgba(16, 185, 129, 0.28); }
+.connector-pill.good strong { color: var(--accent-emerald); }
+.connector-pill.warn { border-color: rgba(245, 158, 11, 0.28); }
+.connector-pill.warn strong { color: var(--accent-amber); }
+.connector-pill.bad { border-color: rgba(244, 63, 94, 0.3); }
+.connector-pill.bad strong { color: var(--accent-rose); }
+.connector-pill.muted strong { color: var(--text-muted); }
 
 /* ============================================================
    Main Content (Center)
@@ -483,7 +516,9 @@ button, textarea, input, select {
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 1.1rem;
+  font-size: 0.7rem;
+  font-weight: 700;
+  letter-spacing: 0;
   flex-shrink: 0;
 }
 
@@ -541,7 +576,7 @@ button, textarea, input, select {
   font-size: 0.7rem;
   font-weight: 600;
   text-transform: uppercase;
-  letter-spacing: 0.05em;
+  letter-spacing: 0;
   color: var(--accent-violet);
   margin-bottom: 4px;
 }
@@ -550,7 +585,7 @@ button, textarea, input, select {
   font-size: 0.65rem;
   font-weight: 600;
   text-transform: uppercase;
-  letter-spacing: 0.05em;
+  letter-spacing: 0;
   padding: 2px 6px;
   border-radius: 4px;
 }
@@ -566,6 +601,18 @@ button, textarea, input, select {
 .feed-time {
   font-size: 0.7rem;
   color: var(--text-muted);
+}
+
+.load-more {
+  align-self: center;
+  margin-top: 8px;
+}
+
+.feed-count {
+  text-align: center;
+  font-size: 0.72rem;
+  color: var(--text-muted);
+  padding: 4px 0;
 }
 
 /* ============================================================
@@ -601,7 +648,7 @@ button, textarea, input, select {
   font-size: 0.72rem;
   font-weight: 600;
   text-transform: uppercase;
-  letter-spacing: 0.04em;
+  letter-spacing: 0;
   color: var(--accent-teal);
   margin-bottom: 4px;
 }
@@ -662,6 +709,26 @@ button, textarea, input, select {
   overflow-y: auto;
 }
 
+.mini-status {
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-subtle);
+  padding: 7px 9px;
+  margin-bottom: 8px;
+  font-size: 0.72rem;
+  color: var(--text-secondary);
+  background: var(--bg-surface);
+}
+
+.mini-status.good {
+  border-color: rgba(16, 185, 129, 0.28);
+  color: var(--accent-emerald);
+}
+
+.mini-status.warn {
+  border-color: rgba(245, 158, 11, 0.28);
+  color: var(--accent-amber);
+}
+
 .search-hit {
   padding: 10px;
   border-radius: var(--radius-sm);
@@ -720,6 +787,40 @@ button, textarea, input, select {
   color: #fda4af;
 }
 
+.notice.notification {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  background: rgba(56, 189, 248, 0.1);
+  border: 1px solid rgba(56, 189, 248, 0.25);
+  color: var(--text-primary);
+}
+
+.notice.notification.warning {
+  background: rgba(245, 158, 11, 0.1);
+  border-color: rgba(245, 158, 11, 0.3);
+}
+
+.notice-hint {
+  font-size: 0.78rem;
+  color: var(--text-secondary);
+}
+
+.notice.connector-warning {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  background: rgba(245, 158, 11, 0.1);
+  border: 1px solid rgba(245, 158, 11, 0.3);
+  color: var(--text-primary);
+}
+
+.notice.connector-warning svg {
+  color: var(--accent-amber);
+  flex-shrink: 0;
+}
+
 /* ============================================================
    Sync Band
    ============================================================ */
@@ -728,20 +829,36 @@ button, textarea, input, select {
   border-top: 1px solid var(--border-subtle);
   background: rgba(10, 15, 30, 0.6);
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   gap: 12px;
+  flex-wrap: wrap;
 }
 
-.sync-band pre {
-  flex: 1;
-  overflow: auto;
-  max-height: 200px;
-  padding: 10px;
+.sync-summary {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 220px;
+}
+
+.sync-summary strong {
+  font-size: 0.82rem;
+}
+
+.sync-summary span,
+.sync-issues span {
+  font-size: 0.74rem;
+  color: var(--text-secondary);
+}
+
+.sync-issues {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px 10px;
   border-radius: var(--radius-sm);
-  background: rgba(15, 23, 42, 0.8);
-  color: var(--accent-teal);
-  font-size: 0.72rem;
-  font-family: 'JetBrains Mono', 'Fira Code', monospace;
+  border: 1px solid rgba(245, 158, 11, 0.25);
+  background: rgba(245, 158, 11, 0.08);
 }
 
 /* ============================================================
@@ -812,6 +929,12 @@ button, textarea, input, select {
 
 .nav-badge.pulse {
   animation: pulse-danger 2s infinite;
+}
+
+.nav-badge.neutral {
+  background-color: rgba(56, 189, 248, 0.18);
+  color: var(--accent-blue);
+  animation: none;
 }
 
 @keyframes pulse-danger {
@@ -901,7 +1024,7 @@ button, textarea, input, select {
 .action-type {
   font-size: 0.75rem;
   text-transform: uppercase;
-  letter-spacing: 0.05em;
+  letter-spacing: 0;
   font-weight: 600;
   color: var(--accent-blue);
 }
@@ -1110,6 +1233,43 @@ kbd {
   font-size: 0.7rem;
   color: var(--text-muted);
   margin-top: 2px;
+}
+
+/* Loading skeletons */
+.skeleton-row {
+  pointer-events: none;
+}
+
+.skeleton-block,
+.skeleton-line {
+  position: relative;
+  overflow: hidden;
+  background: rgba(148, 163, 184, 0.14);
+}
+
+.skeleton-block::after,
+.skeleton-line::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  transform: translateX(-100%);
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.08), transparent);
+  animation: shimmer 1.4s infinite;
+}
+
+.skeleton-line {
+  height: 12px;
+  border-radius: 6px;
+  margin: 5px 0;
+  width: 72%;
+}
+
+.skeleton-line.medium { width: 54%; }
+.skeleton-line.short { width: 64%; }
+.skeleton-line.tiny { width: 34%; height: 9px; }
+
+@keyframes shimmer {
+  100% { transform: translateX(100%); }
 }
 
 /* ============================================================

@@ -22,7 +22,7 @@ class TaskAgent(BaseAgent):
         description = event.body
         if event.kind == "brain_dump" and len(event.body) < 120:
             title = event.body
-            description = f"Captured via Brain Dump"
+            description = "Captured via Brain Dump"
 
         return AgentDecision(
             self.name,

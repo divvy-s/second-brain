@@ -99,6 +99,12 @@ class BrainWorkflow:
         return state
 
     async def ingest(self, state: BrainState) -> BrainState:
+        return await self._ingest_impl(state, use_llm_summaries=True)
+
+    async def ingest_lightweight(self, state: BrainState) -> BrainState:
+        return await self._ingest_impl(state, use_llm_summaries=False)
+
+    async def _ingest_impl(self, state: BrainState, *, use_llm_summaries: bool) -> BrainState:
         events = state.get("events")
         if events is None:
             raw_events = self.runner.fetch_all_events()
@@ -113,7 +119,11 @@ class BrainWorkflow:
         for event in events:
             if not event.entities:
                 event.entities = [entity.to_dict() for entity in self.extractor.extract(f"{event.title}\n{event.body}")]
-            semantic_summary = await self._semantic_summary(event)
+            semantic_summary = (
+                await self._semantic_summary(event)
+                if use_llm_summaries
+                else self._fallback_summary(event)
+            )
             event.metadata["semantic_summary"] = semantic_summary
             if self.event_bus is not None:
                 self.event_bus.publish(event)
@@ -287,6 +297,9 @@ class BrainWorkflow:
                 pass
             except Exception:
                 pass
+        return self._fallback_summary(event)
+
+    def _fallback_summary(self, event: ContextEvent) -> str:
         raw = f"{event.title}. {event.body}".strip()
         raw = " ".join(raw.split())
         return raw[:280]

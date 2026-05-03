@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from intelligence.llm_adapter import LLMAdapter, LLMRequest, LLMUnavailable
-from memory.retrieval import HybridRetriever, RetrievalHit
+from memory.retrieval import HybridRetriever
 
 
 @dataclass(frozen=True)
