@@ -18,15 +18,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # Set working directory
 WORKDIR /app
 
-# Copy python dependency files and install
-COPY pyproject.toml .
+# Copy the rest of the application code first so pyproject.toml can find the packages
+COPY . .
+
+# Install python dependencies
 RUN pip install --no-cache-dir .
 
 # Download spaCy model
 RUN python -m spacy download en_core_web_sm
-
-# Copy the rest of the application code
-COPY . .
 
 # Ensure data directory exists and initialize the database
 RUN mkdir -p data && python -m scripts.init_db
