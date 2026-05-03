@@ -31,7 +31,7 @@ llm:
     provider: "openrouter"
     base_url: "https://openrouter.ai/api/v1"
     api_key_env: "OPENROUTER_API_KEY"
-    model: "openrouter/free"
+    model: "openai/gpt-4.1-mini"
     timeout_seconds: 30
     max_retries: 1
   fallback:
@@ -47,13 +47,20 @@ plugins:
     client_secret_env: "GOOGLE_CLIENT_SECRET"
     refresh_token_env: "GOOGLE_REFRESH_TOKEN"
     max_results: 10
+    mock_events:
+      - body: "Meeting about the new project proposal tomorrow at 10 AM."
+      - body: "Reminder: Submit the monthly report by Friday."
   slack:
     enabled: true
     bot_token_env: "SLACK_BOT_TOKEN"
     # Slack reads only configured channels. Set IDs here or SLACK_CHANNEL_IDS in the environment.
     channel_ids: []
+    mock_events:
+      - body: "Has anyone seen the latest design docs? #design"
+      - body: "@local-user Can you check the deployment logs?"
   whatsapp:
     enabled: true
+    mock_enabled: true
     inbound_mode: "webhook"
     polling_enabled: false
     api_key_env: "WHATSAPP_API_KEY"
@@ -62,6 +69,9 @@ plugins:
     verify_token_env: "WHATSAPP_VERIFY_TOKEN"
     api_version: "v22.0"
     base_url: "https://graph.facebook.com"
+    mock_events:
+      - body: "URGENT: Your server is down! Check it immediately."
+      - body: "Can we schedule a call for tomorrow afternoon?"
   telegram:
     enabled: true
     inbound_mode: "webhook"
@@ -69,12 +79,22 @@ plugins:
     bot_token_env: "TELEGRAM_BOT_TOKEN"
     chat_id_env: "TELEGRAM_CHAT_ID"
     webhook_secret_env: "TELEGRAM_WEBHOOK_SECRET"
+    mock_events:
+      - body: "I'll be late for the meeting, please start without me."
+      - body: "Remember to buy eggs on the way home."
   calendar:
     enabled: true
     access_token_env: "CALENDAR_ACCESS_TOKEN"
     client_id_env: "GOOGLE_CLIENT_ID"
     client_secret_env: "GOOGLE_CLIENT_SECRET"
     refresh_token_env: "GOOGLE_REFRESH_TOKEN"
+    mock_events:
+      - title: "Doctor Appointment"
+        body: "Annual checkup at the clinic."
+        occurred_at: "2026-05-04T09:00:00Z"
+      - title: "Team Lunch"
+        body: "Celebrating the successful launch."
+        occurred_at: "2026-05-05T12:30:00Z"
   todoist:
     enabled: true
     api_key_env: "TODOIST_API_KEY"
@@ -83,3 +103,21 @@ plugins:
     exclude_labels:
       - "template"
       - "onboarding"
+    mock_events:
+      - body: "Update the documentation for the API."
+      - body: "Call the bank regarding the transaction issue."
+voice:
+  enabled: true
+  # Priority score threshold above which TTS is triggered automatically.
+  # Range 0.0–1.0. Events from the boss, urgent calendar alerts, etc. typically score 0.8+.
+  tts_priority_threshold: 0.80
+  # ElevenLabs credentials (env var names)
+  elevenlabs_api_key_env: "ELEVENLABS_API_KEY"
+  elevenlabs_voice_id_env: "ELEVENLABS_VOICE_ID"
+  # Reuses your existing OPENAI_API_KEY for Whisper STT
+  whisper_api_key_env: "OPENAI_API_KEY"
+  # Redis TTL for generated audio (seconds). Audio is temporary — not stored in SQLite/ChromaDB.
+  audio_ttl_seconds: 300
+  # Circuit breaker: after 3 ElevenLabs failures, pause for this many minutes then auto-reset.
+  circuit_breaker_reset_minutes: 30
+
