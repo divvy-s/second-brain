@@ -30,18 +30,9 @@ dev = [
   "ruff>=0.5"
 ]
 
-[tool.setuptools]
-packages = [
-  "connectors",
-  "connectors.mcp",
-  "memory",
-  "intelligence",
-  "orchestration",
-  "agents",
-  "execution",
-  "api",
-  "second_brain_sdk"
-]
+[tool.setuptools.packages.find]
+where = ["."]
+exclude = ["tests*", "frontend*", "scripts*", "data*", "build*"]
 
 [tool.ruff]
 line-length = 100
