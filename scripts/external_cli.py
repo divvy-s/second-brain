@@ -113,7 +113,7 @@ def normalize_mock_events(service: str, config: dict[str, Any]) -> list[dict[str
 
 
 def has_mock_events(config: dict[str, Any]) -> bool:
-    return bool(config.get("mock_events"))
+    return bool(config.get("mock_events")) or config.get("mock_enabled") is True
 
 
 def normalize_string_list(value: Any) -> list[str]:
@@ -591,7 +591,12 @@ def health(service: str, config: dict[str, Any]) -> dict[str, Any]:
         token = creds.get("access_token") or resolve_secret(config, "access_token")
         live_configured = bool(token) or can_refresh_google_token(config)
         if not live_configured:
-            return {"ok": True, "healthy": False, "mode": "mock" if mock_enabled else "unconfigured", "mock_enabled": mock_enabled}
+            return {
+                "ok": True,
+                "healthy": mock_enabled,
+                "mode": "mock" if mock_enabled else "unconfigured",
+                "mock_enabled": mock_enabled,
+            }
         try:
             url = (
                 "https://gmail.googleapis.com/gmail/v1/users/me/profile"
@@ -606,7 +611,12 @@ def health(service: str, config: dict[str, Any]) -> dict[str, Any]:
         token = resolve_secret(config, "bot_token", "api_key")
         channels = normalize_string_list(config.get("channel_ids") or os.environ.get("SLACK_CHANNEL_IDS", ""))
         if not token:
-            return {"ok": True, "healthy": False, "mode": "mock" if mock_enabled else "unconfigured", "mock_enabled": mock_enabled}
+            return {
+                "ok": True,
+                "healthy": mock_enabled,
+                "mode": "mock" if mock_enabled else "unconfigured",
+                "mock_enabled": mock_enabled,
+            }
         if not channels:
             return {
                 "ok": True,
@@ -626,7 +636,12 @@ def health(service: str, config: dict[str, Any]) -> dict[str, Any]:
         mode = str(config.get("inbound_mode") or config.get("mode") or "webhook").lower()
         token = resolve_secret(config, "bot_token")
         if not token:
-            return {"ok": True, "healthy": False, "mode": "mock" if mock_enabled else "unconfigured", "mock_enabled": mock_enabled}
+            return {
+                "ok": True,
+                "healthy": mock_enabled,
+                "mode": "mock" if mock_enabled else "unconfigured",
+                "mock_enabled": mock_enabled,
+            }
         if mode == "webhook" or config.get("polling_enabled") is False:
             return {"ok": True, "healthy": True, "mode": "webhook", "mock_enabled": mock_enabled}
         try:
@@ -640,7 +655,12 @@ def health(service: str, config: dict[str, Any]) -> dict[str, Any]:
         api_key = resolve_secret(config, "api_key")
         phone_id = resolve_secret(config, "phone_number_id")
         if not api_key or not phone_id:
-            return {"ok": True, "healthy": False, "mode": "mock" if mock_enabled else "unconfigured", "mock_enabled": mock_enabled}
+            return {
+                "ok": True,
+                "healthy": mock_enabled,
+                "mode": "mock" if mock_enabled else "unconfigured",
+                "mock_enabled": mock_enabled,
+            }
         try:
             api_version = str(config.get("api_version") or os.environ.get("WHATSAPP_API_VERSION", "v22.0"))
             http_json("GET", f"https://graph.facebook.com/{api_version}/{phone_id}", headers={"Authorization": f"Bearer {api_key}"})
@@ -650,7 +670,12 @@ def health(service: str, config: dict[str, Any]) -> dict[str, Any]:
     if service == "todoist":
         token = resolve_secret(config, "api_key")
         if not token:
-            return {"ok": True, "healthy": False, "mode": "mock" if mock_enabled else "unconfigured", "mock_enabled": mock_enabled}
+            return {
+                "ok": True,
+                "healthy": mock_enabled,
+                "mode": "mock" if mock_enabled else "unconfigured",
+                "mock_enabled": mock_enabled,
+            }
         try:
             http_json("GET", "https://api.todoist.com/api/v1/tasks?limit=1", headers={"Authorization": f"Bearer {token}"})
             return {"ok": True, "healthy": True, "mode": "live", "mock_enabled": mock_enabled}
