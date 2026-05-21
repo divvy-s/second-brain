@@ -117,10 +117,10 @@ def _state_to_json(state: dict[str, Any]) -> dict[str, Any]:
 def _allowed_origins(config: dict[str, Any]) -> list[str]:
     env_origins = os.environ.get("ALLOWED_ORIGINS", "").strip()
     if env_origins:
-        return [item.strip() for item in env_origins.split(",") if item.strip()]
+        return [item.strip().rstrip("/") for item in env_origins.split(",") if item.strip()]
     config_origins = config.get("api", {}).get("allowed_origins", [])
     if isinstance(config_origins, list) and config_origins:
-        return [str(item) for item in config_origins]
+        return [str(item).rstrip("/") for item in config_origins]
     return ["http://localhost:5173", "http://127.0.0.1:5173"]
 
 
